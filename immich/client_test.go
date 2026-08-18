@@ -30,10 +30,10 @@ func TestSearchMetadataAssetsFollowsPagination(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch reqBody.Page {
 		case 1:
-			w.Write([]byte(`{"assets":{"total":2,"count":1,"nextPage":"2",
+			_, _ = w.Write([]byte(`{"assets":{"total":2,"count":1,"nextPage":"2",
 				"items":[{"id":"a1","originalFileName":"a1.jpg","type":"IMAGE"}]}}`))
 		case 2:
-			w.Write([]byte(`{"assets":{"total":2,"count":1,"nextPage":null,
+			_, _ = w.Write([]byte(`{"assets":{"total":2,"count":1,"nextPage":null,
 				"items":[{"id":"a2","originalFileName":"a2.jpg","type":"IMAGE"}]}}`))
 		default:
 			t.Fatalf("unexpected page %d", reqBody.Page)

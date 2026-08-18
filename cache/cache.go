@@ -72,10 +72,10 @@ func (c *Cache) Put(assetID, mimeType string, r io.Reader) (path string, err err
 		return "", err
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) // no-op once renamed
+	defer func() { _ = os.Remove(tmpName) }() // no-op once renamed
 
 	if _, err := io.Copy(tmp, r); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return "", err
 	}
 	if err := tmp.Close(); err != nil {
@@ -148,8 +148,8 @@ func (c *Cache) evict() {
 		if total <= c.maxBytes {
 			break
 		}
-		os.Remove(e.path)
-		os.Remove(c.typePath(e.assetID))
+		_ = os.Remove(e.path)
+		_ = os.Remove(c.typePath(e.assetID))
 		total -= e.size
 	}
 }

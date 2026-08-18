@@ -70,7 +70,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		data, err := io.ReadAll(body)
-		body.Close()
+		_ = body.Close()
 		if err != nil {
 			log.Printf("DownloadOriginal(%s) read failed: %v", assetID, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
@@ -90,7 +90,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "cache error", http.StatusInternalServerError)
 			return
 		}
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		w.Header().Set("Content-Type", mimeType)
 		http.ServeContent(w, r, assetID, modTime, f)
 		return
@@ -107,7 +107,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data, err := io.ReadAll(body)
-	body.Close()
+	_ = body.Close()
 	if err != nil {
 		log.Printf("DownloadOriginal(%s) read failed: %v", assetID, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
@@ -129,7 +129,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cache error", http.StatusInternalServerError)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
 		http.Error(w, "cache error", http.StatusInternalServerError)
