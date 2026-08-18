@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>immich-dlna-proxy</Name>
+  <Repository>ghcr.io/jastBytes/immich-dlna-proxy:latest</Repository>
+  <Registry>https://ghcr.io</Registry>
+  <Network>host</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/jastBytes/immich-dlna-proxy</Support>
+  <Project>https://github.com/jastBytes/immich-dlna-proxy</Project>
+  <Overview>Exposes Immich albums and named people (photos only) as a DLNA MediaServer so Smart TVs can browse and display them without an extra app. Uses host networking because SSDP relies on UDP multicast, which does not traverse Docker's bridge network.</Overview>
+  <Category>MediaApp:Photos Network:</Category>
+  <WebUI/>
+  <TemplateURL/>
+  <Icon>https://immich.app/img/immich-logo.svg</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Immich URL" Target="IMMICH_URL" Default="http://192.168.1.10:2283" Mode="" Description="Base URL of your Immich server (host:port), reachable from this container. With host networking, this is usually just your Unraid server's own IP and the Immich port." Type="Variable" Display="always" Required="true" Mask="false">http://192.168.1.10:2283</Config>
+  <Config Name="Immich API Key" Target="IMMICH_API_KEY" Default="" Mode="" Description="Immich API key with album.read / asset.read / person.read permissions. Create one under Immich &gt; Account Settings &gt; API Keys." Type="Variable" Display="always" Required="true" Mask="true"></Config>
+  <Config Name="Friendly Name" Target="FRIENDLY_NAME" Default="Immich Photos" Mode="" Description="Name shown on TVs when browsing available DLNA servers." Type="Variable" Display="always" Required="false" Mask="false">Immich Photos</Config>
+  <Config Name="Listen Address" Target="LISTEN_ADDR" Default=":8200" Mode="" Description="host:port the HTTP part (description.xml, SOAP control, media streaming) binds to. Since networking is host mode, make sure this port is free on your Unraid server." Type="Variable" Display="advanced" Required="false" Mask="false">:8200</Config>
+  <Config Name="Device UUID" Target="DEVICE_UUID" Default="" Mode="" Description="Optional: set a fixed UUID if you run more than one instance, so each has a stable identity. Leave empty to use the built-in default." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="SSDP Interface" Target="SSDP_INTERFACE" Default="" Mode="" Description="Optional: restrict SSDP discovery to a single network interface name (e.g. eth0). Leave empty to use all interfaces." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+  <Config Name="Cache" Target="/config/cache" Default="/mnt/user/appdata/immich-dlna-proxy/cache" Mode="rw" Description="Host folder for the disk cache of photo bytes, so repeated views don't re-download from Immich. Survives container recreation." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/immich-dlna-proxy/cache</Config>
+  <Config Name="Cache Max Size (MB)" Target="CACHE_MAX_MB" Default="2048" Mode="" Description="Soft size budget for the cache folder in MB. Oldest-viewed photos are evicted first once exceeded." Type="Variable" Display="advanced" Required="false" Mask="false">2048</Config>
+  <Config Name="Disable Cache" Target="DISABLE_CACHE" Default="false" Mode="" Description="Set to true to disable disk caching entirely and always stream live from Immich." Type="Variable" Display="advanced" Required="false" Mask="false">false</Config>
+  <Config Name="Max Resolution" Target="MAX_RESOLUTION" Default="" Mode="" Description="Optional: downscale photos larger than this to fit, e.g. 1920x1080. Aspect ratio is preserved; smaller photos are untouched. Only JPEG/PNG are downscaled. Leave empty to always serve full resolution." Type="Variable" Display="advanced" Required="false" Mask="false"></Config>
+</Container>

@@ -1,0 +1,201 @@
+# Architecture
+
+`immich-dlna-proxy` makes Immich albums and people browsable and viewable
+on DLNA clients (mainly Smart TVs) by implementing the relevant slice of
+the UPnP/DLNA MediaServer protocol and translating it into calls against
+the Immich REST API. It's a single Go binary with no external
+dependencies.
+
+Only photos (`type == "IMAGE"`) are exposed. Videos are skipped entirely
+in this version.
+
+## The three protocol layers
+
+A DLNA client interacts with a MediaServer in three stages, and the
+proxy implements one component for each:
+
+| Stage | Protocol | Implemented in |
+|---|---|---|
+| 1. Discovery | SSDP (UDP multicast) | `dlna/ssdp.go` |
+| 2. Description | HTTP GET of a device/service description XML | `dlna/description.go` |
+| 3. Control | SOAP-over-HTTP actions (Browse, GetProtocolInfo, ...) | `dlna/contentdirectory.go`, `dlna/connectionmanager.go` |
+
+Media itself (the actual photo bytes) is served over a plain HTTP `GET`,
+outside the SOAP layer - see [Media streaming](#media-streaming) below.
+
+### 1. Discovery (SSDP)
+
+On startup, `dlna.RunSSDP` joins the standard SSDP multicast group
+(`239.255.255.250:1900`) and does two things:
+
+- **Answers `M-SEARCH` requests.** When a TV searches the network for
+  media servers, the proxy replies directly to the searcher (unicast)
+  with an `HTTP/1.1 200 OK` response containing a `LOCATION` header
+  pointing at its own `description.xml`.
+- **Sends periodic `NOTIFY ssdp:alive` announcements** (every 15
+  minutes) to the multicast group, so clients that are already listening
+  pick up the server without having to search first.
+
+The `LOCATION` URL uses whatever local IP the OS would pick to reach the
+public internet (`detectLocalIP` in `ssdp.go`), combined with the
+configured HTTP port. This is why **host networking is required in
+Docker** - see [Configuration](configuration.md#networking) for why.
+
+### 2. Description
+
+`GET /description.xml` returns a UPnP device description declaring the
+device as a `MediaServer:1` with two services:
+
+- `ContentDirectory:1` - lets clients browse the library (albums, photos)
+- `ConnectionManager:1` - a required-by-spec service that mostly just
+  advertises supported protocols/formats; some TVs (notably Samsung) are
+  strict about its presence even though the proxy doesn't do anything
+  interesting with it
+
+Each service's SCPD (Service Control Protocol Description) is served
+separately at `/ContentDirectory.xml` and `/ConnectionManager.xml`, and
+declares which SOAP actions each service supports.
+
+### 3. Control (ContentDirectory Browse)
+
+This is where Immich data gets turned into DLNA objects. The client
+issues a SOAP `Browse` action against `/ctl/ContentDirectory` with an
+`ObjectID` and a `BrowseFlag` (`BrowseDirectChildren` to list children,
+`BrowseMetadata` to describe the object itself). The root exposes two
+fixed folders, "Albums" and "People"; the proxy maps object IDs to
+Immich concepts like this:
+
+| ObjectID | Represents | `BrowseDirectChildren` returns |
+|---|---|---|
+| `0` | Root | Two containers: `albums` and `people` |
+| `albums` | "Albums" folder | One `container` per album (`GET /api/albums`) |
+| `album:<id>` | One album | One `item` per **photo** asset in that album (`GET /api/albums/{id}`, filtered to `type == "IMAGE"`) |
+| `people` | "People" folder | One `container` per **named** person (`GET /api/people`, filtered to entries with a non-empty `name` - unconfirmed/unnamed face clusters are skipped) |
+| `person:<id>` | One person | One `item` per photo they appear in (`GET /api/people/{id}/assets`, filtered to `type == "IMAGE"`) |
+| `asset:<id>` | One photo | N/A (items have no children); `BrowseMetadata` returns the item itself |
+
+Each `Browse` call hits the Immich API fresh - album/asset/people
+**listings** are not cached (only the underlying image bytes are, see
+[Caching](#caching) below). A TV re-opening the same album or person
+repeatedly will re-fetch the listing every time.
+
+People folders don't report a `childCount` (the DIDL-Lite attribute is
+simply omitted): getting an accurate photo count per person would need
+one extra `GetPersonStatistics` call per person just to render the
+"People" listing, which doesn't scale for libraries with many tagged
+people. DLNA clients treat a container without `childCount` as
+"browsable, count unknown" rather than empty, so this doesn't stop
+anyone from opening the folder.
+
+The response is a small DIDL-Lite XML document (built in `dlna/didl.go`)
+embedded, escaped, inside the SOAP response body - this is standard UPnP
+ContentDirectory behavior, not something specific to this proxy.
+
+Each `item` element includes a `<res>` tag pointing at
+`http://<host>/media/<assetID>` - that's the URL that ends up loaded by
+the TV to actually display the photo.
+
+## Media streaming
+
+`GET /media/{assetID}` is a plain (non-SOAP) HTTP endpoint that serves
+the actual photo bytes. It's handled in `dlna/server.go` and behaves
+differently depending on whether the disk cache is enabled (the default):
+
+```
+                 ┌─────────────┐   Browse (SOAP)    ┌──────────────────┐
+      TV  ──────▶│ ContentDir- │───────────────────▶│  Immich REST API │
+                 │  ectory     │◀───album/asset list─┤  /api/albums...  │
+                 └─────────────┘                     └──────────────────┘
+                        │ <res> URL: /media/{id}
+                        ▼
+                 ┌─────────────┐   cache hit    ┌───────────────┐
+      TV  ──────▶│ /media/{id} │───────────────▶│  disk cache   │
+                 │             │                │ CACHE_DIR/{id}│
+                 │             │◀───────────────┤               │
+                 │             │                └───────────────┘
+                 │             │   cache miss
+                 │             │──────────────────────┐
+                 │             │                       ▼
+                 │             │              ┌──────────────────┐
+                 │             │◀─────────────┤  Immich REST API │
+                 └─────────────┘  full original │ /api/assets/.../original │
+                                                └──────────────────┘
+```
+
+- **Cache hit:** the file is opened from `CACHE_DIR` and served via
+  Go's `http.ServeContent`, which handles `Range` requests, `ETag`, and
+  `Last-Modified` automatically. No Immich call happens at all.
+- **Cache miss:** the proxy downloads the *complete* original from
+  Immich (ignoring any `Range` header on the inbound request - it always
+  wants the whole file to cache it), writes it to disk, then serves it
+  from the newly written file the same way as a cache hit. This means
+  the very first view of a photo waits for the full download before any
+  bytes reach the TV; subsequent views are effectively instant.
+- **Cache disabled** (`DISABLE_CACHE=true`): falls back to directly
+  proxying bytes from Immich on every request, forwarding the `Range`
+  header as-is. Nothing is written to disk.
+
+## Caching
+
+See [`cache/cache.go`](../cache/cache.go) for the implementation. Key
+points:
+
+- Each cached asset is stored as two files: `<assetID>` (the bytes) and
+  `<assetID>.type` (a one-line MIME type sidecar).
+- "Last used" is approximated by the main file's **mtime**, which gets
+  touched (`os.Chtimes`) on every cache hit. There's no separate access
+  log or database.
+- Writes are atomic: bytes are written to a temp file in the same
+  directory, then `os.Rename`d into place, so a crash mid-download never
+  leaves a truncated file at the final path.
+- After every write, a background goroutine checks whether the total
+  cache size exceeds `CACHE_MAX_MB`. If so, it lists all cached files,
+  sorts by mtime ascending, and deletes the oldest ones (bytes + type
+  sidecar together) until back under budget. This is a plain LRU
+  eviction sweep, not a background daemon - it only runs reactively
+  after writes.
+
+## Downscaling
+
+If `MAX_RESOLUTION` is set (e.g. `1920x1080`), photos larger than that
+are downscaled to fit within it (aspect ratio preserved) before being
+cached/served. See [`imageproc/resize.go`](../imageproc/resize.go).
+
+- Only **JPEG and PNG** are supported, since those are the only formats
+  the Go standard library can both decode and re-encode. Anything else
+  (HEIC, WebP, TIFF, ...) is served at its original resolution
+  regardless of `MAX_RESOLUTION` - the proxy checks the format up front
+  and passes unsupported ones through untouched rather than failing the
+  request.
+- Downscaling uses a **box filter**: each destination pixel is the
+  average of the block of source pixels it maps to. It's a deliberately
+  simple, dependency-free algorithm - a reasonable trade-off for
+  "smaller file so an old TV loads it faster", not a high-quality
+  resampling filter like Lanczos.
+- Resizing happens **before** the cache write (on a cache miss) or,
+  when caching is disabled, on every request. Either way, the decision
+  of whether to resize is cheap: `image.DecodeConfig` reads just the
+  header to check dimensions, and the (comparatively expensive) full
+  decode + box filter + re-encode only runs when the image actually
+  exceeds the configured bounds.
+- Because a full decode is required, `MAX_RESOLUTION` + `DISABLE_CACHE`
+  together means every request buffers the whole photo in memory rather
+  than using the lighter-weight Range-passthrough proxy path. This is
+  usually fine for photos, but means the "efficient streaming" fast path
+  described above only applies when downscaling is off.
+
+## What isn't implemented
+
+- **Videos.** Only `type == "IMAGE"` assets are ever listed or served.
+- **Unnamed people.** Immich creates a Person for every detected face
+  cluster, including ones you haven't confirmed/named yet. Only named
+  people show up as folders - there's no "unknown faces" browsing.
+- **Transcoding/format conversion.** JPEG/PNG can be downscaled (see
+  `MAX_RESOLUTION` below) but never converted to a different format.
+- **Listing cache.** Album/asset/people browsing always hits the Immich
+  API live (only the image bytes are cached).
+- **Authentication/authorization at the DLNA layer.** Anyone who can
+  reach the proxy's HTTP port on your LAN can browse and view all
+  albums visible to the configured API key. There's no per-client access
+  control - this mirrors how DLNA works in general (it has no built-in
+  auth), so treat it the same as any other LAN media server.
