@@ -152,7 +152,7 @@ func detectLocalIP() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	addr := conn.LocalAddr().(*net.UDPAddr)
 	return addr.IP.String(), nil
 }

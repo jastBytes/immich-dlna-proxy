@@ -21,7 +21,7 @@ func TestMediaHandlerCachesAfterFirstRequest(t *testing.T) {
 		if r.URL.Path == "/api/assets/abc123/original" {
 			immichHits++
 			w.Header().Set("Content-Type", "image/jpeg")
-			w.Write([]byte("fake-jpeg-bytes"))
+			_, _ = w.Write([]byte("fake-jpeg-bytes"))
 			return
 		}
 		http.NotFound(w, r)
@@ -47,7 +47,7 @@ func TestMediaHandlerCachesAfterFirstRequest(t *testing.T) {
 			t.Fatal(err)
 		}
 		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if string(body) != "fake-jpeg-bytes" {
 			t.Fatalf("request %d: unexpected body %q", i, body)
 		}
@@ -67,7 +67,7 @@ func TestMediaHandlerDownscalesOversizedImage(t *testing.T) {
 	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/assets/big1/original" {
 			w.Header().Set("Content-Type", "image/jpeg")
-			w.Write(oversized)
+			_, _ = w.Write(oversized)
 			return
 		}
 		http.NotFound(w, r)
@@ -97,7 +97,7 @@ func TestMediaHandlerDownscalesOversizedImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 
 	if len(body) >= len(oversized) {
 		t.Fatalf("expected downscaled output to be smaller than %d bytes, got %d", len(oversized), len(body))
@@ -117,7 +117,7 @@ func TestMediaHandlerDownscalesOversizedImage(t *testing.T) {
 		t.Fatal(err)
 	}
 	body2, _ := io.ReadAll(resp2.Body)
-	resp2.Body.Close()
+	_ = resp2.Body.Close()
 	if !bytes.Equal(body, body2) {
 		t.Fatal("expected cached response to match the first (already-downscaled) response")
 	}

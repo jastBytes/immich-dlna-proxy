@@ -145,17 +145,17 @@ const connectionManagerSCPD = `<?xml version="1.0" encoding="UTF-8"?>
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	fmt.Fprintf(w, deviceDescriptionTmpl, htmlEscapeName(s.cfg.FriendlyName), s.cfg.UUID)
+	_, _ = fmt.Fprintf(w, deviceDescriptionTmpl, htmlEscapeName(s.cfg.FriendlyName), s.cfg.UUID)
 }
 
 func (s *Server) handleContentDirectorySCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	w.Write([]byte(contentDirectorySCPD))
+	_, _ = w.Write([]byte(contentDirectorySCPD))
 }
 
 func (s *Server) handleConnectionManagerSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	w.Write([]byte(connectionManagerSCPD))
+	_, _ = w.Write([]byte(connectionManagerSCPD))
 }
 
 func htmlEscapeName(s string) string {

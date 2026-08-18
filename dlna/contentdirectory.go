@@ -281,7 +281,7 @@ func writeSoapResponse(w http.ResponseWriter, serviceNS, actionResponseName stri
 	fmt.Fprintf(&body, `</u:%s>`, actionResponseName)
 
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	fmt.Fprintf(w, `<?xml version="1.0"?>`+
+	_, _ = fmt.Fprintf(w, `<?xml version="1.0"?>`+
 		`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" `+
 		`s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">`+
 		`<s:Body>%s</s:Body></s:Envelope>`, body.String())

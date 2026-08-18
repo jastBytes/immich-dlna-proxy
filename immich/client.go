@@ -53,7 +53,7 @@ func (c *Client) ListAlbums() ([]Album, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("immich ListAlbums: unexpected status %s", resp.Status)
 	}
@@ -75,7 +75,7 @@ func (c *Client) GetAlbum(id string) (*Album, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("immich GetAlbum(%s): unexpected status %s", id, resp.Status)
 	}
@@ -103,7 +103,7 @@ func (c *Client) ListPeople() ([]Person, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("immich ListPeople: unexpected status %s", resp.Status)
 	}
@@ -124,7 +124,7 @@ func (c *Client) GetPerson(id string) (*Person, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("immich GetPerson(%s): unexpected status %s", id, resp.Status)
 	}
@@ -164,7 +164,7 @@ func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
 			return nil, err
 		}
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("immich searchMetadata(%s=%s): unexpected status %s", filterField, id, resp.Status)
 		}
 		var out struct {
@@ -174,7 +174,7 @@ func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
 			} `json:"assets"`
 		}
 		err = json.NewDecoder(resp.Body).Decode(&out)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +203,7 @@ func (c *Client) GetAsset(id string) (*Asset, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("immich GetAsset(%s): unexpected status %s", id, resp.Status)
 	}
@@ -229,7 +229,7 @@ func (c *Client) DownloadOriginal(assetID string) (body io.ReadCloser, mimeType 
 		return nil, "", err
 	}
 	if resp.StatusCode != http.StatusOK {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return nil, "", fmt.Errorf("immich DownloadOriginal(%s): unexpected status %s", assetID, resp.Status)
 	}
 
@@ -256,7 +256,7 @@ func (c *Client) StreamOriginal(w http.ResponseWriter, r *http.Request, assetID 
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
 		http.Error(w, "immich upstream error", http.StatusBadGateway)

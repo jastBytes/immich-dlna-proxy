@@ -66,7 +66,7 @@ type mrrBody struct {
 
 func (s *Server) handleMediaReceiverRegistrarSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	w.Write([]byte(mediaReceiverRegistrarSCPD))
+	_, _ = w.Write([]byte(mediaReceiverRegistrarSCPD))
 }
 
 func (s *Server) handleMediaReceiverRegistrarControl(w http.ResponseWriter, r *http.Request) {
