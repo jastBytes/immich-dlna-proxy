@@ -1,17 +1,12 @@
 package immich
 
-// Album is the shape returned by GET /api/albums (list endpoint).
-// Immich returns more fields than this; we only decode what we need.
+// Album is the shape returned by GET /api/albums and GET /api/albums/{id}.
+// Neither includes the album's assets (see GetAlbumAssets) - Immich
+// returns more fields than this too; we only decode what we need.
 type Album struct {
 	ID         string `json:"id"`
 	AlbumName  string `json:"albumName"`
 	AssetCount int    `json:"assetCount"`
-}
-
-// AlbumDetail is returned by GET /api/albums/{id} and includes the assets.
-type AlbumDetail struct {
-	Album
-	Assets []Asset `json:"assets"`
 }
 
 // Asset is a single photo/video entry.

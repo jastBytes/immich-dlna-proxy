@@ -75,21 +75,30 @@ func newTestServerWithFakeImmich(t *testing.T) (srvURL string) {
 
 	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/albums":
+		switch {
+		case r.URL.Path == "/api/albums":
 			w.Write([]byte(`[{"id":"album1","albumName":"Vacation","assetCount":1}]`))
-		case "/api/albums/album1":
-			w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":1,
-				"assets":[{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}`))
-		case "/api/people":
+		case r.URL.Path == "/api/albums/album1":
+			w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":1}`))
+		case r.URL.Path == "/api/people":
 			w.Write([]byte(`{"total":2,"hidden":0,"people":[
 				{"id":"person1","name":"Alice","isHidden":false},
 				{"id":"person2","name":"","isHidden":false}
 			]}`))
-		case "/api/people/person1":
+		case r.URL.Path == "/api/people/person1":
 			w.Write([]byte(`{"id":"person1","name":"Alice","isHidden":false}`))
-		case "/api/people/person1/assets":
-			w.Write([]byte(`[{"id":"photo2","originalFileName":"alice.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]`))
+		case r.URL.Path == "/api/search/metadata":
+			body, _ := io.ReadAll(r.Body)
+			switch {
+			case strings.Contains(string(body), `"albumIds"`):
+				w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+					"items":[{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
+			case strings.Contains(string(body), `"personIds"`):
+				w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+					"items":[{"id":"photo2","originalFileName":"alice.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
+			default:
+				http.NotFound(w, r)
+			}
 		default:
 			http.NotFound(w, r)
 		}

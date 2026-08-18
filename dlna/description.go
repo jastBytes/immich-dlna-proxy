@@ -6,7 +6,7 @@ import (
 )
 
 const deviceDescriptionTmpl = `<?xml version="1.0" encoding="UTF-8"?>
-<root xmlns="urn:schemas-upnp-org:device-1-0">
+<root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">
   <specVersion>
     <major>1</major>
     <minor>0</minor>
@@ -18,6 +18,7 @@ const deviceDescriptionTmpl = `<?xml version="1.0" encoding="UTF-8"?>
     <modelName>Immich DLNA Proxy</modelName>
     <modelNumber>1.0</modelNumber>
     <UDN>uuid:%s</UDN>
+    <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
     <serviceList>
       <service>
         <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
@@ -32,6 +33,13 @@ const deviceDescriptionTmpl = `<?xml version="1.0" encoding="UTF-8"?>
         <SCPDURL>/ConnectionManager.xml</SCPDURL>
         <controlURL>/ctl/ConnectionManager</controlURL>
         <eventSubURL>/evt/ConnectionManager</eventSubURL>
+      </service>
+      <service>
+        <serviceType>urn:microsoft.com:service:X_MS_MediaReceiverRegistrar:1</serviceType>
+        <serviceId>urn:microsoft.com:serviceId:X_MS_MediaReceiverRegistrar</serviceId>
+        <SCPDURL>/X_MS_MediaReceiverRegistrar.xml</SCPDURL>
+        <controlURL>/ctl/X_MS_MediaReceiverRegistrar</controlURL>
+        <eventSubURL>/evt/X_MS_MediaReceiverRegistrar</eventSubURL>
       </service>
     </serviceList>
   </device>

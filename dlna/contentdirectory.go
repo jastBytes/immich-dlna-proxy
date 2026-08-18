@@ -158,26 +158,26 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 
 	case strings.HasPrefix(objectID, "album:"):
 		albumID := strings.TrimPrefix(objectID, "album:")
-		detail, err := s.immich.GetAlbum(albumID)
+		album, err := s.immich.GetAlbum(albumID)
 		if err != nil {
 			log.Printf("GetAlbum(%s) failed: %v", albumID, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		photos := make([]int, 0, len(detail.Assets))
-		for i, a := range detail.Assets {
-			if a.IsPhoto() {
-				photos = append(photos, i)
-			}
+		assets, err := s.immich.GetAlbumAssets(albumID)
+		if err != nil {
+			log.Printf("GetAlbumAssets(%s) failed: %v", albumID, err)
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return
 		}
+		photos := filterPhotos(assets)
 
 		if args.BrowseFlag == "BrowseMetadata" {
-			didl = wrapDIDL(buildContainer(objectID, "albums", detail.AlbumName, len(photos)))
+			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos)))
 			returned, total = 1, 1
 		} else {
 			var b strings.Builder
-			for _, idx := range photos {
-				a := detail.Assets[idx]
+			for _, a := range photos {
 				resURL := baseURL + "/media/" + a.ID
 				b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
 			}
@@ -204,16 +204,13 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				http.Error(w, "upstream error", http.StatusBadGateway)
 				return
 			}
+			photos := filterPhotos(assets)
 			var b strings.Builder
-			var n int
-			for _, a := range assets {
-				if !a.IsPhoto() {
-					continue
-				}
+			for _, a := range photos {
 				resURL := baseURL + "/media/" + a.ID
 				b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
-				n++
 			}
+			n := len(photos)
 			didl = wrapDIDL(b.String())
 			returned, total = n, n
 		}
@@ -243,6 +240,18 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 	})
 }
 
+// filterPhotos keeps only the photo assets (see Asset.IsPhoto) - we don't
+// support serving/playing videos yet.
+func filterPhotos(assets []immich.Asset) []immich.Asset {
+	photos := make([]immich.Asset, 0, len(assets))
+	for _, a := range assets {
+		if a.IsPhoto() {
+			photos = append(photos, a)
+		}
+	}
+	return photos
+}
+
 func countNamedPeople(people []immich.Person) int {
 	n := 0
 	for _, p := range people {
@@ -258,7 +267,7 @@ func countNamedPeople(people []immich.Person) int {
 func writeSoapResponse(w http.ResponseWriter, serviceNS, actionResponseName string, args map[string]string) {
 	// Preserve a stable, spec-friendly argument order for the actions we use.
 	order := []string{"Result", "NumberReturned", "TotalMatches", "UpdateID",
-		"SearchCaps", "SortCaps", "Id", "Source", "Sink", "ConnectionIDs",
+		"SearchCaps", "SortCaps", "Id", "Source", "Sink", "ConnectionIDs", "RegistrationRespMsg",
 		"RcsID", "AVTransportID", "ProtocolInfo", "PeerConnectionManager",
 		"PeerConnectionID", "Direction", "Status"}
 

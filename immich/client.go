@@ -1,10 +1,12 @@
 package immich
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,8 +64,9 @@ func (c *Client) ListAlbums() ([]Album, error) {
 	return albums, nil
 }
 
-// GetAlbum returns the album with its assets included.
-func (c *Client) GetAlbum(id string) (*AlbumDetail, error) {
+// GetAlbum returns the album's own metadata (name, asset count, etc.) but
+// not its assets - see GetAlbumAssets for those.
+func (c *Client) GetAlbum(id string) (*Album, error) {
 	req, err := c.newRequest(http.MethodGet, "/api/albums/"+id)
 	if err != nil {
 		return nil, err
@@ -76,11 +79,16 @@ func (c *Client) GetAlbum(id string) (*AlbumDetail, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("immich GetAlbum(%s): unexpected status %s", id, resp.Status)
 	}
-	var detail AlbumDetail
-	if err := json.NewDecoder(resp.Body).Decode(&detail); err != nil {
+	var album Album
+	if err := json.NewDecoder(resp.Body).Decode(&album); err != nil {
 		return nil, err
 	}
-	return &detail, nil
+	return &album, nil
+}
+
+// GetAlbumAssets returns every asset (photo or video) in the given album.
+func (c *Client) GetAlbumAssets(albumID string) ([]Asset, error) {
+	return c.searchMetadataAssets("albumIds", albumID)
 }
 
 // ListPeople returns named, non-hidden people (GET /api/people defaults to
@@ -127,28 +135,60 @@ func (c *Client) GetPerson(id string) (*Person, error) {
 	return &person, nil
 }
 
-// GetPersonAssets returns every asset (photo or video) this person appears
-// in. Unlike album/search endpoints this one isn't paginated - fine for
-// our purposes, but very large libraries with a person in thousands of
-// photos could see a slow response here.
-func (c *Client) GetPersonAssets(id string) ([]Asset, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/people/"+id+"/assets")
-	if err != nil {
-		return nil, err
+// GetPersonAssets returns every asset (photo or video) this person appears in.
+func (c *Client) GetPersonAssets(personID string) ([]Asset, error) {
+	return c.searchMetadataAssets("personIds", personID)
+}
+
+// searchMetadataAssets fetches every asset matching a single-value filter
+// (e.g. albumIds/personIds) via POST /api/search/metadata, following
+// "nextPage" until the server stops returning one.
+func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
+	var all []Asset
+	page := 1
+	for {
+		reqBody, err := json.Marshal(map[string]any{filterField: []string{id}, "page": page})
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/api/search/metadata", bytes.NewReader(reqBody))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("x-api-key", c.APIKey)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			return nil, fmt.Errorf("immich searchMetadata(%s=%s): unexpected status %s", filterField, id, resp.Status)
+		}
+		var out struct {
+			Assets struct {
+				Items    []Asset `json:"items"`
+				NextPage *string `json:"nextPage"`
+			} `json:"assets"`
+		}
+		err = json.NewDecoder(resp.Body).Decode(&out)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, out.Assets.Items...)
+
+		if out.Assets.NextPage == nil {
+			return all, nil
+		}
+		next, err := strconv.Atoi(*out.Assets.NextPage)
+		if err != nil {
+			return all, nil
+		}
+		page = next
 	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich GetPersonAssets(%s): unexpected status %s", id, resp.Status)
-	}
-	var assets []Asset
-	if err := json.NewDecoder(resp.Body).Decode(&assets); err != nil {
-		return nil, err
-	}
-	return assets, nil
 }
 
 // GetAsset returns metadata for a single asset (used to know its mime type

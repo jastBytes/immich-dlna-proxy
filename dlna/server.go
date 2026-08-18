@@ -33,6 +33,8 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("/ConnectionManager.xml", s.handleConnectionManagerSCPD)
 	mux.HandleFunc("/ctl/ContentDirectory", s.handleContentDirectoryControl)
 	mux.HandleFunc("/ctl/ConnectionManager", s.handleConnectionManagerControl)
+	mux.HandleFunc("/X_MS_MediaReceiverRegistrar.xml", s.handleMediaReceiverRegistrarSCPD)
+	mux.HandleFunc("/ctl/X_MS_MediaReceiverRegistrar", s.handleMediaReceiverRegistrarControl)
 	mux.HandleFunc("/media/", s.handleMedia)
 
 	return mux
