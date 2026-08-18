@@ -1,0 +1,59 @@
+- name: feature
+  color: "0e8a16"
+  description: New feature or capability
+
+- name: enhancement
+  color: "a2eeef"
+  description: Improvement to existing functionality
+
+- name: fix
+  color: "d73a4a"
+  description: Bug fix
+
+- name: bugfix
+  color: "d73a4a"
+  description: Bug fix
+
+- name: bug
+  color: "d73a4a"
+  description: Something isn't working
+
+- name: chore
+  color: "cfd3d7"
+  description: Maintenance work with no user-facing change
+
+- name: refactor
+  color: "cfd3d7"
+  description: Code change that neither fixes a bug nor adds a feature
+
+- name: ci
+  color: "1d76db"
+  description: Changes to CI/CD workflows or configuration
+
+- name: documentation
+  color: "0075ca"
+  description: Improvements or additions to documentation
+
+- name: dependencies
+  color: "0366d6"
+  description: Dependency updates
+
+- name: major
+  color: "b60205"
+  description: Triggers a major (breaking) version bump on release
+
+- name: breaking
+  color: "b60205"
+  description: Introduces a breaking change
+
+- name: minor
+  color: "fbca04"
+  description: Triggers a minor version bump on release
+
+- name: patch
+  color: "c2e0c6"
+  description: Triggers a patch version bump on release
+
+- name: skip-changelog
+  color: "ededed"
+  description: Excluded from the release draft's changelog
