@@ -87,6 +87,8 @@ func newTestServerWithFakeImmich(t *testing.T) (srvURL string) {
 			]}`))
 		case "/api/people/person1":
 			_, _ = w.Write([]byte(`{"id":"person1","name":"Alice","isHidden":false}`))
+		case "/api/assets/photo1":
+			_, _ = w.Write([]byte(`{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}`))
 		case "/api/search/metadata":
 			body, _ := io.ReadAll(r.Body)
 			switch {
@@ -180,5 +182,223 @@ func TestBrowseMetadataOnPersonReturnsItsOwnName(t *testing.T) {
 	}
 	if !strings.Contains(didl, "Alice") {
 		t.Errorf("expected name 'Alice' in metadata, got: %s", didl)
+	}
+}
+
+func TestBrowseRootMetadataReturnsSelfDescribingContainer(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "0", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="0"`) || !strings.Contains(didl, `parentID="-1"`) {
+		t.Errorf("expected root self-describing container, got: %s", didl)
+	}
+}
+
+func TestBrowseAlbumsMetadataReturnsCount(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "albums", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="albums"`) || !strings.Contains(didl, `childCount="1"`) {
+		t.Errorf("expected albums metadata with childCount 1, got: %s", didl)
+	}
+}
+
+func TestBrowsePeopleMetadataReturnsNamedCount(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "people", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="people"`) || !strings.Contains(didl, `childCount="1"`) {
+		t.Errorf("expected people metadata counting only named people, got: %s", didl)
+	}
+}
+
+func TestBrowseAlbumMetadataReturnsPhotoCount(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "album:album1", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="album:album1"`) || !strings.Contains(didl, "Vacation") {
+		t.Errorf("expected album1 metadata, got: %s", didl)
+	}
+}
+
+func TestBrowseAssetReturnsPhotoItem(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "asset:photo1", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="asset:photo1"`) {
+		t.Errorf("expected asset item, got: %s", didl)
+	}
+	if !strings.Contains(didl, "/media/photo1") {
+		t.Errorf("expected a /media/photo1 res URL, got: %s", didl)
+	}
+	if !strings.Contains(didl, "beach.jpg") {
+		t.Errorf("expected title 'beach.jpg', got: %s", didl)
+	}
+}
+
+func TestBrowseUnknownObjectReturns404(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	resp := browseExpectStatus(t, ts, "not-a-real-object", "BrowseDirectChildren", http.StatusNotFound)
+	if !strings.Contains(resp, "unknown object") {
+		t.Errorf("expected 'unknown object' error, got: %s", resp)
+	}
+}
+
+// browseExpectStatus is like browse but for requests expected to fail;
+// it asserts the status code instead of requiring 200.
+func browseExpectStatus(t *testing.T, tsURL, objectID, flag string, wantStatus int) string {
+	t.Helper()
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <ObjectID>` + objectID + `</ObjectID>
+      <BrowseFlag>` + flag + `</BrowseFlag>
+      <Filter>*</Filter>
+      <StartingIndex>0</StartingIndex>
+      <RequestedCount>0</RequestedCount>
+      <SortCriteria></SortCriteria>
+    </u:Browse>
+  </s:Body>
+</s:Envelope>`
+
+	req, err := http.NewRequest(http.MethodPost, tsURL+"/ctl/ContentDirectory", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+	req.Header.Set("SOAPACTION", `"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"`)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("Browse(%s, %s): status = %d, want %d", objectID, flag, resp.StatusCode, wantStatus)
+	}
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(respBody)
+}
+
+// newTestServerWithFailingImmich builds a server whose Immich backend
+// returns 500 for every request, to exercise handleBrowse's upstream-error
+// branches (which all respond 502 Bad Gateway).
+func newTestServerWithFailingImmich(t *testing.T) (srvURL string) {
+	t.Helper()
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(fakeImmich.Close)
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	return ts.URL
+}
+
+func TestBrowseUpstreamErrorsReturn502(t *testing.T) {
+	ts := newTestServerWithFailingImmich(t)
+
+	cases := []struct {
+		name     string
+		objectID string
+		flag     string
+	}{
+		{"root direct children (ListAlbums)", "0", "BrowseDirectChildren"},
+		{"albums metadata (ListAlbums)", "albums", "BrowseMetadata"},
+		{"albums direct children (ListAlbums)", "albums", "BrowseDirectChildren"},
+		{"people metadata (ListPeople)", "people", "BrowseMetadata"},
+		{"people direct children (ListPeople)", "people", "BrowseDirectChildren"},
+		{"album metadata (GetAlbum)", "album:album1", "BrowseMetadata"},
+		{"album direct children (GetAlbum)", "album:album1", "BrowseDirectChildren"},
+		{"person metadata (GetPerson)", "person:person1", "BrowseMetadata"},
+		{"person direct children (GetPersonAssets)", "person:person1", "BrowseDirectChildren"},
+		{"asset (GetAsset)", "asset:photo1", "BrowseMetadata"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			resp := browseExpectStatus(t, ts, c.objectID, c.flag, http.StatusBadGateway)
+			if !strings.Contains(resp, "upstream error") {
+				t.Errorf("expected 'upstream error', got: %s", resp)
+			}
+		})
+	}
+}
+
+func TestHandleContentDirectoryControlGetSearchCapabilities(t *testing.T) {
+	srv := newTestServer(t)
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body><u:GetSearchCapabilities xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"/></s:Body>
+</s:Envelope>`
+
+	code, resp := soapPost(t, srv, "/ctl/ContentDirectory", body)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, resp)
+	}
+	if !strings.Contains(resp, "GetSearchCapabilitiesResponse") {
+		t.Errorf("expected GetSearchCapabilitiesResponse, got: %s", resp)
+	}
+}
+
+func TestHandleContentDirectoryControlGetSortCapabilities(t *testing.T) {
+	srv := newTestServer(t)
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body><u:GetSortCapabilities xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"/></s:Body>
+</s:Envelope>`
+
+	code, resp := soapPost(t, srv, "/ctl/ContentDirectory", body)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, resp)
+	}
+	if !strings.Contains(resp, "GetSortCapabilitiesResponse") {
+		t.Errorf("expected GetSortCapabilitiesResponse, got: %s", resp)
+	}
+}
+
+func TestHandleContentDirectoryControlGetSystemUpdateID(t *testing.T) {
+	srv := newTestServer(t)
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body><u:GetSystemUpdateID xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"/></s:Body>
+</s:Envelope>`
+
+	code, resp := soapPost(t, srv, "/ctl/ContentDirectory", body)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", code, resp)
+	}
+	if !strings.Contains(resp, "<Id>1</Id>") {
+		t.Errorf("expected GetSystemUpdateIDResponse with Id 1, got: %s", resp)
+	}
+}
+
+func TestHandleContentDirectoryControlUnsupportedAction(t *testing.T) {
+	srv := newTestServer(t)
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/">
+  <s:Body><u:SomeUnknownAction xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1"/></s:Body>
+</s:Envelope>`
+
+	code, _ := soapPost(t, srv, "/ctl/ContentDirectory", body)
+	if code != http.StatusNotImplemented {
+		t.Errorf("status = %d, want 501", code)
+	}
+}
+
+func TestHandleContentDirectoryControlBadEnvelope(t *testing.T) {
+	srv := newTestServer(t)
+	code, _ := soapPost(t, srv, "/ctl/ContentDirectory", "not xml at all")
+	if code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", code)
 	}
 }
