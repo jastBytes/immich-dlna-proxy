@@ -15,6 +15,11 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
+	log.Printf("Immich server: %s", cfg.ImmichURL)
+	if cfg.MaxWidth > 0 {
+		log.Printf("Downscaling photos to max %dx%d", cfg.MaxWidth, cfg.MaxHeight)
+	}
+
 	client := immich.New(cfg.ImmichURL, cfg.APIKey)
 
 	var diskCache *cache.Cache
@@ -36,8 +41,15 @@ func main() {
 		}
 	}()
 
-	log.Printf("Starting SSDP responder (friendly name: %s, uuid: %s)", cfg.FriendlyName, cfg.UUID)
+	log.Printf("Starting SSDP responder (friendly name: %s, uuid: %s, interface: %s)", cfg.FriendlyName, cfg.UUID, ifaceOrAll(cfg.Interface))
 	if err := dlna.RunSSDP(cfg); err != nil {
 		log.Fatalf("SSDP responder failed: %v", err)
 	}
+}
+
+func ifaceOrAll(iface string) string {
+	if iface == "" {
+		return "all"
+	}
+	return iface
 }

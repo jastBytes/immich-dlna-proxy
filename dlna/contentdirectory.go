@@ -232,6 +232,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		return
 	}
 
+	if !strings.HasPrefix(objectID, "asset:") {
+		log.Printf("Browse %s %s -> %d/%d items", objectID, args.BrowseFlag, returned, total)
+	}
+
 	writeSoapResponse(w, cdNS, "BrowseResponse", map[string]string{
 		"Result":         didl,
 		"NumberReturned": strconv.Itoa(returned),
