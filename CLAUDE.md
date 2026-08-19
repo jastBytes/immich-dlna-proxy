@@ -48,22 +48,33 @@ concurrently. Each package has one job:
 | `immich/` | Thin REST client for the Immich API (`client.go`) and the JSON shapes it expects (`types.go`) — `GET /api/albums`, `/api/albums/{id}`, `/api/people`, `/api/people/{id}/assets`, `/api/assets/{id}/original`. |
 | `cache/` | LRU disk cache for original photo bytes, keyed by asset ID. Not used for album/asset/people *listings* — only for `/media/{id}` bytes. |
 | `imageproc/` | Box-filter downscaling for `MAX_RESOLUTION`, JPEG/PNG only. |
-| `dlna/` | Everything protocol-facing: SSDP discovery, UPnP description XML, ContentDirectory/ConnectionManager SOAP actions, DIDL-Lite XML building, and the `/media/{id}` HTTP handler. |
+| `dlna/` | Everything protocol-facing: SSDP discovery, UPnP description XML, ContentDirectory/ConnectionManager/X_MS_MediaReceiverRegistrar SOAP actions, DIDL-Lite XML building, and the `/media/{id}` HTTP handler. |
 
 A DLNA client talks to the proxy in three stages, each owned by a
 different file in `dlna/`:
 
 1. **Discovery (SSDP, UDP 1900)** — `ssdp.go`. Answers `M-SEARCH` and
-   sends periodic `NOTIFY ssdp:alive`. The announced `LOCATION` uses
-   whatever local IP the OS would pick to reach the internet
-   (`detectLocalIP`), which is why Docker needs `--network host` — SSDP
-   multicast doesn't traverse the default bridge network.
+   sends periodic `NOTIFY ssdp:alive`. Every advertised NT/ST (root
+   device, UUID, device type, and each service type) is answered
+   individually via `searchTargets` — a control point that searches for
+   a specific service type rather than the device type must still find
+   the server — and `ssdp:all` gets one reply per target. The announced
+   `LOCATION` uses whatever local IP the OS would pick to reach the
+   internet (`detectLocalIP`), which is why Docker needs
+   `--network host` — SSDP multicast doesn't traverse the default bridge
+   network.
 2. **Description (HTTP GET)** — `description.go` serves
-   `/description.xml`, `/ContentDirectory.xml`, `/ConnectionManager.xml`.
+   `/description.xml`, `/ContentDirectory.xml`, `/ConnectionManager.xml`,
+   `/X_MS_MediaReceiverRegistrar.xml`.
 3. **Control (SOAP-over-HTTP)** — `contentdirectory.go` handles `Browse`
    actions at `/ctl/ContentDirectory`; `connectionmanager.go` is a
    required-by-spec no-op-ish service some TVs (Samsung) insist on
-   seeing. `didl.go` builds the DIDL-Lite XML returned by `Browse`.
+   seeing; `mediareceiverregistrar.go` implements the Microsoft
+   X_MS_MediaReceiverRegistrar extension (`IsAuthorized`/`IsValidated`/
+   `RegisterDevice`, always answering "authorized") that Xbox, Windows
+   Media Player, and some Samsung firmwares require to be present or
+   they silently treat the server as having no content. `didl.go` builds
+   the DIDL-Lite XML returned by `Browse`.
 
 `Browse` maps DLNA `ObjectID`s to Immich concepts:
 
@@ -75,6 +86,11 @@ different file in `dlna/`:
 | `people` | `GET /api/people` | one container per *named* person (unnamed face clusters skipped) |
 | `person:<id>` | `GET /api/people/{id}/assets` | one item per photo (filtered to `IMAGE`) |
 | `asset:<id>` | — | `<res>` points at `/media/{assetID}` |
+
+Every photo `<item>` (from `album:<id>`, `person:<id>`, or `asset:<id>`)
+also carries an `<upnp:albumArtURI>` pointing at the same `/media/{id}`
+URL — without it, some media browsers (e.g. Home Assistant) list titles
+but show a placeholder icon instead of a thumbnail.
 
 Every `Browse` call hits Immich live; listings are never cached, only
 the image bytes behind `/media/{id}`.

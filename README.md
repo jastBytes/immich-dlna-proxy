@@ -13,12 +13,17 @@ Written in Go, no external dependencies — just the standard library.
 ## How it works
 
 - **SSDP** (UDP 1900): announces the server on the LAN and answers
-  `M-SEARCH` requests so TVs find it automatically.
+  `M-SEARCH` requests (for the device itself and each individual service
+  it advertises) so TVs find it automatically.
 - **ContentDirectory (SOAP over HTTP)**: on `Browse`, calls the Immich API
   (`GET /api/albums`, `GET /api/albums/{id}`, `GET /api/people`,
   `GET /api/people/{id}/assets`) and maps the root to two folders,
   "Albums" and "People", each album/person to a DLNA *container*
   (folder), and each photo asset to a DLNA *item*.
+- **X_MS_MediaReceiverRegistrar**: a Microsoft-defined UPnP extension some
+  clients (Xbox, Windows Media Player, some Samsung firmwares) require to
+  be present before they'll browse a server's content at all - the proxy
+  advertises it and always answers "authorized".
 - **Media streaming (HTTP)**: `/media/{assetID}` serves photo bytes to the
   TV. On a cache miss, it downloads the full original from Immich's
   `/api/assets/{id}/original`, writes it to a disk cache, then serves it
