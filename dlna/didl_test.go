@@ -90,10 +90,10 @@ func TestWrapDIDLIncludesNamespacesAndItems(t *testing.T) {
 
 func TestXMLAttrEscape(t *testing.T) {
 	cases := map[string]string{
-		`a & b`:  "a &amp; b",
+		`a & b`:   "a &amp; b",
 		`"quote"`: "&#34;quote&#34;",
-		`<tag>`:  "&lt;tag&gt;",
-		"plain":  "plain",
+		`<tag>`:   "&lt;tag&gt;",
+		"plain":   "plain",
 	}
 	for in, want := range cases {
 		if got := xmlAttrEscape(in); got != want {
