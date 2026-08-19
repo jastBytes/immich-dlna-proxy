@@ -47,59 +47,27 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resizeEnabled := s.cfg.MaxWidth > 0 && s.cfg.MaxHeight > 0
-
-	if s.cache == nil {
-		if !resizeEnabled {
-			// Fast path: proxy bytes straight through, including Range
-			// support, without buffering the whole file in memory.
-			if err := s.immich.StreamOriginal(w, r, assetID); err != nil {
-				log.Printf("StreamOriginal(%s) failed: %v", assetID, err)
+	if s.cache != nil {
+		if path, mimeType, modTime, ok := s.cache.Get(assetID); ok {
+			f, err := os.Open(path)
+			if err != nil {
+				log.Printf("cache: open(%s) failed: %v", path, err)
+				http.Error(w, "cache error", http.StatusInternalServerError)
+				return
 			}
+			defer func() { _ = f.Close() }()
+			w.Header().Set("Content-Type", mimeType)
+			http.ServeContent(w, r, assetID, modTime, f)
 			return
 		}
-
-		// Downscaling requires decoding the whole image first, so we
-		// can't stream-passthrough here - download it fully, resize,
-		// then serve the result from memory (still supports Range,
-		// via http.ServeContent).
-		body, mimeType, err := s.immich.DownloadOriginal(assetID)
-		if err != nil {
-			log.Printf("DownloadOriginal(%s) failed: %v", assetID, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
-		}
-		data, err := io.ReadAll(body)
-		_ = body.Close()
-		if err != nil {
-			log.Printf("DownloadOriginal(%s) read failed: %v", assetID, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
-		}
-
-		data = s.maybeResize(assetID, data)
-		w.Header().Set("Content-Type", mimeType)
-		http.ServeContent(w, r, assetID, time.Now(), bytes.NewReader(data))
-		return
 	}
 
-	if path, mimeType, modTime, ok := s.cache.Get(assetID); ok {
-		f, err := os.Open(path)
-		if err != nil {
-			log.Printf("cache: open(%s) failed: %v", path, err)
-			http.Error(w, "cache error", http.StatusInternalServerError)
-			return
-		}
-		defer func() { _ = f.Close() }()
-		w.Header().Set("Content-Type", mimeType)
-		http.ServeContent(w, r, assetID, modTime, f)
-		return
-	}
-
-	// Cache miss: download the full original from Immich, downscale it
-	// if configured, populate the cache with the (possibly downscaled)
-	// bytes, then serve it from disk (this also correctly answers any
-	// Range request the client made, via http.ServeContent).
+	// Cache miss (or caching disabled): download the full original from
+	// Immich. We always buffer and decode it - not just when resizing is
+	// configured - because normalizing EXIF orientation requires it too:
+	// most DLNA renderers ignore the orientation tag and show raw pixels,
+	// so a portrait photo tagged "rotate 90" needs the rotation baked into
+	// the pixels themselves to display upright.
 	body, mimeType, err := s.immich.DownloadOriginal(assetID)
 	if err != nil {
 		log.Printf("DownloadOriginal(%s) failed: %v", assetID, err)
@@ -114,8 +82,18 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	data = s.fixOrientation(assetID, data)
 	data = s.maybeResize(assetID, data)
 
+	if s.cache == nil {
+		w.Header().Set("Content-Type", mimeType)
+		http.ServeContent(w, r, assetID, time.Now(), bytes.NewReader(data))
+		return
+	}
+
+	// Populate the cache with the (possibly rotated/downscaled) bytes,
+	// then serve it from disk - this also correctly answers any Range
+	// request the client made, via http.ServeContent.
 	path, err := s.cache.Put(assetID, mimeType, bytes.NewReader(data))
 	if err != nil {
 		log.Printf("cache: put(%s) failed: %v", assetID, err)
@@ -137,6 +115,22 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mimeType)
 	http.ServeContent(w, r, assetID, info.ModTime(), f)
+}
+
+// fixOrientation normalizes EXIF orientation (see imageproc.FixOrientation)
+// so photos display upright on renderers that ignore the tag. On any error
+// it returns data unchanged - orientation correction is a nice-to-have,
+// never a reason to fail serving the photo.
+func (s *Server) fixOrientation(assetID string, data []byte) []byte {
+	out, changed, err := imageproc.FixOrientation(data)
+	if err != nil {
+		log.Printf("fixOrientation(%s) failed, serving original: %v", assetID, err)
+		return data
+	}
+	if changed {
+		log.Printf("normalized EXIF orientation for %s", assetID)
+	}
+	return out
 }
 
 // maybeResize downscales data if MAX_RESOLUTION is configured and the

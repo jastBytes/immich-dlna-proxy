@@ -316,63 +316,6 @@ func TestDownloadOriginalErrorStatus(t *testing.T) {
 	}
 }
 
-func TestStreamOriginalForwardsRangeAndHeaders(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/assets/a1/original" {
-			t.Errorf("path = %q", r.URL.Path)
-		}
-		if r.Header.Get("Range") != "bytes=0-99" {
-			t.Errorf("Range header not forwarded, got %q", r.Header.Get("Range"))
-		}
-		w.Header().Set("Content-Type", "image/jpeg")
-		w.Header().Set("Content-Range", "bytes 0-99/200")
-		w.Header().Set("Accept-Ranges", "bytes")
-		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write([]byte("partial"))
-	}))
-	defer ts.Close()
-
-	client := New(ts.URL, "test-key")
-	req := httptest.NewRequest(http.MethodGet, "/media/a1", nil)
-	req.Header.Set("Range", "bytes=0-99")
-	rec := httptest.NewRecorder()
-
-	if err := client.StreamOriginal(rec, req, "a1"); err != nil {
-		t.Fatal(err)
-	}
-	if rec.Code != http.StatusPartialContent {
-		t.Errorf("status = %d, want 206", rec.Code)
-	}
-	if rec.Header().Get("Content-Type") != "image/jpeg" {
-		t.Errorf("Content-Type = %q", rec.Header().Get("Content-Type"))
-	}
-	if rec.Header().Get("Content-Range") != "bytes 0-99/200" {
-		t.Errorf("Content-Range = %q", rec.Header().Get("Content-Range"))
-	}
-	if rec.Body.String() != "partial" {
-		t.Errorf("body = %q", rec.Body.String())
-	}
-}
-
-func TestStreamOriginalUpstreamError(t *testing.T) {
-	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	defer ts.Close()
-
-	client := New(ts.URL, "test-key")
-	req := httptest.NewRequest(http.MethodGet, "/media/a1", nil)
-	rec := httptest.NewRecorder()
-
-	err := client.StreamOriginal(rec, req, "a1")
-	if err == nil {
-		t.Fatal("expected error for non-200/206 upstream status")
-	}
-	if rec.Code != http.StatusBadGateway {
-		t.Errorf("status = %d, want 502", rec.Code)
-	}
-}
-
 // TestSearchMetadataAssetsFollowsPagination verifies GetAlbumAssets collects
 // items across multiple pages by following the "nextPage" cursor.
 func TestSearchMetadataAssetsFollowsPagination(t *testing.T) {

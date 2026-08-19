@@ -214,9 +214,9 @@ func (c *Client) GetAsset(id string) (*Asset, error) {
 	return &asset, nil
 }
 
-// DownloadOriginal fetches the complete original file for caching purposes.
-// Unlike StreamOriginal, it never forwards a Range header - callers that
-// want the whole object (e.g. to populate the disk cache) should use this.
+// DownloadOriginal fetches the complete original file. It never forwards a
+// Range header, since callers always need the whole object (to decode it
+// for EXIF orientation / resizing, or to populate the disk cache).
 // The caller must close the returned ReadCloser.
 func (c *Client) DownloadOriginal(assetID string) (body io.ReadCloser, mimeType string, err error) {
 	req, err := c.newRequest(http.MethodGet, "/api/assets/"+assetID+"/original")
@@ -238,37 +238,4 @@ func (c *Client) DownloadOriginal(assetID string) (body io.ReadCloser, mimeType 
 		mimeType = "image/jpeg"
 	}
 	return resp.Body, mimeType, nil
-}
-
-// StreamOriginal proxies the original file bytes for an asset straight
-// through to w, forwarding the Range header so TVs can do partial reads
-// (some picture viewers issue range requests even for photos).
-func (c *Client) StreamOriginal(w http.ResponseWriter, r *http.Request, assetID string) error {
-	req, err := c.newRequest(http.MethodGet, "/api/assets/"+assetID+"/original")
-	if err != nil {
-		return err
-	}
-	if rng := r.Header.Get("Range"); rng != "" {
-		req.Header.Set("Range", rng)
-	}
-
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
-		http.Error(w, "immich upstream error", http.StatusBadGateway)
-		return fmt.Errorf("immich StreamOriginal(%s): unexpected status %s", assetID, resp.Status)
-	}
-
-	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified", "ETag"} {
-		if v := resp.Header.Get(h); v != "" {
-			w.Header().Set(h, v)
-		}
-	}
-	w.WriteHeader(resp.StatusCode)
-	_, err = io.Copy(w, resp.Body)
-	return err
 }

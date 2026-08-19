@@ -2,6 +2,7 @@ package dlna
 
 import (
 	"bytes"
+	"encoding/binary"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -123,52 +124,42 @@ func TestMediaHandlerDownscalesOversizedImage(t *testing.T) {
 	}
 }
 
-func TestMediaHandlerNoCachePassthroughSupportsRange(t *testing.T) {
+func TestMediaHandlerFixesOrientationEvenWithoutCacheOrResize(t *testing.T) {
+	// orientation 6: sensor recorded this 6x4 photo sideways; it should
+	// display upright (4x6) once served, even with caching and resizing
+	// both disabled - most DLNA renderers ignore the EXIF tag itself.
+	src := makeExifJPEG(t, 6, 4, 6)
+
 	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/assets/abc123/original" {
-			http.NotFound(w, r)
-			return
-		}
-		if rng := r.Header.Get("Range"); rng != "" {
+		if r.URL.Path == "/api/assets/rot1/original" {
 			w.Header().Set("Content-Type", "image/jpeg")
-			w.Header().Set("Content-Range", "bytes 5-13/14")
-			w.Header().Set("Accept-Ranges", "bytes")
-			w.WriteHeader(http.StatusPartialContent)
-			_, _ = w.Write([]byte("jpeg-bytes"))
+			_, _ = w.Write(src)
 			return
 		}
-		w.Header().Set("Content-Type", "image/jpeg")
-		_, _ = w.Write([]byte("fake-jpeg-bytes"))
+		http.NotFound(w, r)
 	}))
 	defer fakeImmich.Close()
 
 	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
 	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil) // no cache configured
+	srv := NewServer(cfg, client, nil) // no cache
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	req, err := http.NewRequest(http.MethodGet, ts.URL+"/media/abc123", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	req.Header.Set("Range", "bytes=5-13")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.Get(ts.URL + "/media/rot1")
 	if err != nil {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
 	_ = resp.Body.Close()
 
-	if resp.StatusCode != http.StatusPartialContent {
-		t.Fatalf("status = %d, want 206", resp.StatusCode)
+	cfgOut, _, err := image.DecodeConfig(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("served body doesn't decode as an image: %v", err)
 	}
-	if string(body) != "jpeg-bytes" {
-		t.Fatalf("unexpected body %q", body)
-	}
-	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
-		t.Fatalf("unexpected Content-Type %q", ct)
+	if cfgOut.Width != 4 || cfgOut.Height != 6 {
+		t.Fatalf("expected rotated dims 4x6, got %dx%d", cfgOut.Width, cfgOut.Height)
 	}
 }
 
@@ -283,6 +274,36 @@ func TestMediaHandlerCacheMissDownloadErrorReturnsBadGateway(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
 	}
+}
+
+// makeExifJPEG builds a JPEG with a synthetic APP1/Exif segment carrying
+// just the orientation tag, so tests don't need a real camera file on disk.
+func makeExifJPEG(t *testing.T, w, h, orientation int) []byte {
+	t.Helper()
+	base := makeTestJPEG(t, w, h)
+
+	tiff := make([]byte, 8+2+12+4)
+	copy(tiff[0:2], "II")
+	binary.LittleEndian.PutUint16(tiff[2:4], 42)
+	binary.LittleEndian.PutUint32(tiff[4:8], 8)
+	binary.LittleEndian.PutUint16(tiff[8:10], 1) // 1 entry
+	binary.LittleEndian.PutUint16(tiff[10:12], 0x0112)
+	binary.LittleEndian.PutUint16(tiff[12:14], 3) // type SHORT
+	binary.LittleEndian.PutUint32(tiff[14:18], 1) // count
+	binary.LittleEndian.PutUint16(tiff[18:20], uint16(orientation))
+	binary.LittleEndian.PutUint32(tiff[22:26], 0) // next IFD offset
+
+	app1Data := append([]byte("Exif\x00\x00"), tiff...)
+	app1 := make([]byte, 2+2+len(app1Data))
+	app1[0], app1[1] = 0xFF, 0xE1
+	binary.BigEndian.PutUint16(app1[2:4], uint16(2+len(app1Data)))
+	copy(app1[4:], app1Data)
+
+	out := make([]byte, 0, len(base)+len(app1))
+	out = append(out, base[:2]...) // SOI marker
+	out = append(out, app1...)
+	out = append(out, base[2:]...)
+	return out
 }
 
 func makeTestJPEG(t *testing.T, w, h int) []byte {
