@@ -33,7 +33,10 @@ func buildContainer(id, parentID, title string, childCount int) string {
 
 // buildPhotoItem renders one DIDL-Lite <item> element for a photo asset.
 // resURL must be an absolute http(s) URL the client can GET (and ideally
-// range-request) to fetch the bytes.
+// range-request) to fetch the bytes. albumArtURI reuses the same URL:
+// without it, media browsers like Home Assistant's list titles but show a
+// placeholder icon instead of a thumbnail (they don't fall back to <res>
+// for previews).
 func buildPhotoItem(id, parentID, title, mimeType, resURL string) string {
 	if mimeType == "" {
 		mimeType = "image/jpeg"
@@ -42,10 +45,11 @@ func buildPhotoItem(id, parentID, title, mimeType, resURL string) string {
 		`<item id="%s" parentID="%s" restricted="1">`+
 			`<dc:title>%s</dc:title>`+
 			`<upnp:class>object.item.imageItem.photo</upnp:class>`+
+			`<upnp:albumArtURI>%s</upnp:albumArtURI>`+
 			`<res protocolInfo="http-get:*:%s:*">%s</res>`+
 			`</item>`,
 		xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title),
-		mimeType, html.EscapeString(resURL),
+		html.EscapeString(resURL), mimeType, html.EscapeString(resURL),
 	)
 }
 

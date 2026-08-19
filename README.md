@@ -49,7 +49,7 @@ for this first version.
 | Variable         | Required | Default          | Description                                   |
 |-------------------|:--------:|------------------|------------------------------------------------|
 | `IMMICH_URL`       | yes      | –                | Base URL of your Immich server, e.g. `http://192.168.1.10:2283` |
-| `IMMICH_API_KEY`   | yes      | –                | Immich API key (needs album.read / asset.read / person.read) |
+| `IMMICH_API_KEY`   | yes      | –                | Immich API key (needs album.read / asset.read / asset.download / person.read) |
 | `LISTEN_ADDR`      | no       | `:8200`          | HTTP bind address/port                         |
 | `FRIENDLY_NAME`    | no       | `Immich Photos`  | Name shown on TVs when browsing servers        |
 | `DEVICE_UUID`      | no       | fixed default    | Set your own stable UUID if running >1 instance |
@@ -132,6 +132,11 @@ in `release.yml`).
 
 ## Known limitations / things to verify against your Immich version
 
+- If folders/albums browse fine but clicking a photo shows nothing (the
+  proxy logs `DownloadOriginal(...): unexpected status 403`), your API key
+  is missing the `asset.download` permission - `asset.read` is enough to
+  list albums/people but not to fetch the actual file bytes. Edit the key
+  under Account Settings -> API Keys in Immich and grant it.
 - Immich's REST API has changed across major versions. The JSON field
   names used here (`albumName`, `assetCount`, `originalFileName`,
   `originalMimeType`, `type`) match the commonly deployed v1 API as of

@@ -10,7 +10,7 @@ required is missing or malformed.
 | Variable | Required | Default | Description |
 |---|:---:|---|---|
 | `IMMICH_URL` | yes | – | Base URL of your Immich server, reachable from wherever the proxy runs, e.g. `http://192.168.1.10:2283`. No trailing slash needed. |
-| `IMMICH_API_KEY` | yes | – | Immich API key. Needs at least `album.read`, `asset.read`, and `person.read` permissions. Create one under Immich → Account Settings → API Keys. |
+| `IMMICH_API_KEY` | yes | – | Immich API key. Needs at least `album.read`, `asset.read`, `asset.download`, and `person.read` permissions. Create one under Immich → Account Settings → API Keys. `asset.download` is easy to miss - without it, albums/people browse fine but every photo fails to load (proxy logs `DownloadOriginal(...): unexpected status 403`). |
 | `LISTEN_ADDR` | no | `:8200` | `host:port` the HTTP part (description.xml, SOAP control, media streaming) binds to. |
 | `FRIENDLY_NAME` | no | `Immich Photos` | Name shown on TVs when they list available DLNA servers. |
 | `DEVICE_UUID` | no | fixed built-in default | Stable UUID identifying this device to DLNA clients. Set your own if you run more than one instance on the same network - every instance needs a distinct UUID or clients get confused about which is which. |
