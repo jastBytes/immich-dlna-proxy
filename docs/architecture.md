@@ -18,7 +18,7 @@ proxy implements one component for each:
 |---|---|---|
 | 1. Discovery | SSDP (UDP multicast) | `dlna/ssdp.go` |
 | 2. Description | HTTP GET of a device/service description XML | `dlna/description.go` |
-| 3. Control | SOAP-over-HTTP actions (Browse, GetProtocolInfo, ...) | `dlna/contentdirectory.go`, `dlna/connectionmanager.go` |
+| 3. Control | SOAP-over-HTTP actions (Browse, GetProtocolInfo, ...) | `dlna/contentdirectory.go`, `dlna/connectionmanager.go`, `dlna/mediareceiverregistrar.go` |
 
 Media itself (the actual photo bytes) is served over a plain HTTP `GET`,
 outside the SOAP layer - see [Media streaming](#media-streaming) below.
@@ -31,7 +31,14 @@ On startup, `dlna.RunSSDP` joins the standard SSDP multicast group
 - **Answers `M-SEARCH` requests.** When a TV searches the network for
   media servers, the proxy replies directly to the searcher (unicast)
   with an `HTTP/1.1 200 OK` response containing a `LOCATION` header
-  pointing at its own `description.xml`.
+  pointing at its own `description.xml`. It answers every NT/ST it
+  advertises individually (`upnp:rootdevice`, its `uuid:`, the device
+  type, and each service type - ContentDirectory, ConnectionManager,
+  X_MS_MediaReceiverRegistrar), since control points commonly search for
+  a specific service type rather than the device type - a server that
+  only answers device-level searches would be invisible to them. A
+  search for `ssdp:all` gets one reply per advertised type, same as an
+  alive `NOTIFY` burst.
 - **Sends periodic `NOTIFY ssdp:alive` announcements** (every 15
   minutes) to the multicast group, so clients that are already listening
   pick up the server without having to search first.
@@ -44,17 +51,25 @@ Docker** - see [Configuration](configuration.md#networking) for why.
 ### 2. Description
 
 `GET /description.xml` returns a UPnP device description declaring the
-device as a `MediaServer:1` with two services:
+device as a `MediaServer:1` with three services:
 
 - `ContentDirectory:1` - lets clients browse the library (albums, photos)
 - `ConnectionManager:1` - a required-by-spec service that mostly just
   advertises supported protocols/formats; some TVs (notably Samsung) are
   strict about its presence even though the proxy doesn't do anything
   interesting with it
+- `X_MS_MediaReceiverRegistrar:1` - a Microsoft-defined extension that
+  Xbox, Windows Media Player, and a number of Samsung TV firmwares use to
+  check whether they're "authorized" to see a media server's content
+  before browsing it. If it isn't advertised at all, these clients
+  silently treat the server as having no content instead of erroring, so
+  the proxy advertises it and always answers "yes, authorized"
+  (`dlna/mediareceiverregistrar.go`).
 
 Each service's SCPD (Service Control Protocol Description) is served
-separately at `/ContentDirectory.xml` and `/ConnectionManager.xml`, and
-declares which SOAP actions each service supports.
+separately at `/ContentDirectory.xml`, `/ConnectionManager.xml`, and
+`/X_MS_MediaReceiverRegistrar.xml`, and declares which SOAP actions each
+service supports.
 
 ### 3. Control (ContentDirectory Browse)
 
@@ -93,7 +108,10 @@ ContentDirectory behavior, not something specific to this proxy.
 
 Each `item` element includes a `<res>` tag pointing at
 `http://<host>/media/<assetID>` - that's the URL that ends up loaded by
-the TV to actually display the photo.
+the TV to actually display the photo. It also includes an
+`<upnp:albumArtURI>` tag pointing at the same URL: without it, media
+browsers like Home Assistant's list titles but show a placeholder icon
+instead of a thumbnail (they don't fall back to `<res>` for previews).
 
 ## Media streaming
 
