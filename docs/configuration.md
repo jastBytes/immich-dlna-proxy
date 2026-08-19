@@ -26,7 +26,7 @@ default.
 
 ## Running locally (no Docker)
 
-Requires Go 1.22+.
+Requires Go 1.26.5+.
 
 ```bash
 export IMMICH_URL=http://192.168.1.10:2283
