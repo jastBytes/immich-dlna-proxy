@@ -15,6 +15,15 @@ const (
 	deviceST = "urn:schemas-upnp-org:device:MediaServer:1"
 )
 
+// searchTargets lists every NT/ST this device advertises: the root device,
+// its UUID, its device type, and each service type. Control points commonly
+// search for a specific service type (e.g. ContentDirectory) rather than
+// the device type, so all of these must be answerable individually - a
+// server that only answers device-level searches is invisible to them.
+func searchTargets(uuid string) []string {
+	return []string{"upnp:rootdevice", "uuid:" + uuid, deviceST, cdNS, cmNS, mrrNS}
+}
+
 // RunSSDP listens for M-SEARCH requests and answers them, and periodically
 // sends unsolicited ssdp:alive NOTIFY announcements so clients that are
 // already listening pick the server up without having to search.
@@ -68,16 +77,38 @@ func RunSSDP(cfg *config.Config) error {
 			continue
 		}
 		st := parseHeader(msg, "ST")
-		if st != "ssdp:all" && st != deviceST && st != "upnp:rootdevice" && !strings.HasPrefix(st, "uuid:") {
+		targets := searchTargets(cfg.UUID)
+		matched := st == "ssdp:all"
+		for _, t := range targets {
+			if st == t {
+				matched = true
+				break
+			}
+		}
+		if !matched {
 			continue
 		}
-		go respondMSearch(outConn, src, cfg.UUID, location, st)
+		go respondMSearch(outConn, src, cfg.UUID, location, st, targets)
 	}
 }
 
-func respondMSearch(conn *net.UDPConn, dst *net.UDPAddr, uuid, location, st string) {
-	if st == "" {
-		st = deviceST
+// respondMSearch answers one M-SEARCH. A targeted search (st is one of our
+// advertised types) gets a single matching reply; "ssdp:all" gets one reply
+// per advertised type, same as an alive NOTIFY burst.
+func respondMSearch(conn *net.UDPConn, dst *net.UDPAddr, uuid, location, st string, targets []string) {
+	if st != "ssdp:all" {
+		sendSearchReply(conn, dst, uuid, location, st)
+		return
+	}
+	for _, t := range targets {
+		sendSearchReply(conn, dst, uuid, location, t)
+	}
+}
+
+func sendSearchReply(conn *net.UDPConn, dst *net.UDPAddr, uuid, location, st string) {
+	usn := "uuid:" + uuid
+	if st != usn {
+		usn += "::" + st
 	}
 	resp := "HTTP/1.1 200 OK\r\n" +
 		"CACHE-CONTROL: max-age=1800\r\n" +
@@ -85,7 +116,7 @@ func respondMSearch(conn *net.UDPConn, dst *net.UDPAddr, uuid, location, st stri
 		"LOCATION: " + location + "\r\n" +
 		"SERVER: Linux UPnP/1.0 immich-dlna-proxy/1.0\r\n" +
 		"ST: " + st + "\r\n" +
-		"USN: uuid:" + uuid + "::" + st + "\r\n" +
+		"USN: " + usn + "\r\n" +
 		"\r\n"
 	if _, err := conn.WriteToUDP([]byte(resp), dst); err != nil {
 		log.Printf("SSDP M-SEARCH reply failed: %v", err)
@@ -102,11 +133,10 @@ func notifyLoop(conn *net.UDPConn, group *net.UDPAddr, uuid, location string) {
 }
 
 func sendAlive(conn *net.UDPConn, group *net.UDPAddr, uuid, location string) {
-	nts := []string{"upnp:rootdevice", "uuid:" + uuid, deviceST}
-	for _, nt := range nts {
+	for _, nt := range searchTargets(uuid) {
 		usn := "uuid:" + uuid
-		if nt != "uuid:"+uuid {
-			usn = "uuid:" + uuid + "::" + nt
+		if nt != usn {
+			usn += "::" + nt
 		}
 		notify := "NOTIFY * HTTP/1.1\r\n" +
 			"HOST: 239.255.255.250:1900\r\n" +
