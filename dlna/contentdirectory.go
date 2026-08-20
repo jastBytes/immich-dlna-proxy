@@ -1,14 +1,16 @@
 package dlna
 
 import (
+	"bufio"
 	"encoding/xml"
 	"fmt"
-	"html"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jastBytes/immich-dlna-proxy/immich"
 )
@@ -20,6 +22,7 @@ type cdEnvelope struct {
 
 type cdBody struct {
 	Browse                *browseArgs `xml:"Browse"`
+	Search                *searchArgs `xml:"Search"`
 	GetSearchCapabilities *struct{}   `xml:"GetSearchCapabilities"`
 	GetSortCapabilities   *struct{}   `xml:"GetSortCapabilities"`
 	GetSystemUpdateID     *struct{}   `xml:"GetSystemUpdateID"`
@@ -28,6 +31,22 @@ type cdBody struct {
 type browseArgs struct {
 	ObjectID       string `xml:"ObjectID"`
 	BrowseFlag     string `xml:"BrowseFlag"`
+	Filter         string `xml:"Filter"`
+	StartingIndex  int    `xml:"StartingIndex"`
+	RequestedCount int    `xml:"RequestedCount"`
+	SortCriteria   string `xml:"SortCriteria"`
+}
+
+// searchArgs mirrors Search's arguments. We don't parse SearchCriteria - we
+// have no way to run an arbitrary DLNA search expression against Immich, so
+// Search is handled identically to a BrowseDirectChildren on ContainerID
+// (matching this repo's convention of passing through rather than erroring
+// on unsupported inputs). Some DLNA clients (e.g. Samsung's SEC_HHP stack)
+// only consider a ContentDirectory fully capable once Search is present in
+// the service description at all, regardless of whether they ever send one.
+type searchArgs struct {
+	ContainerID    string `xml:"ContainerID"`
+	SearchCriteria string `xml:"SearchCriteria"`
 	Filter         string `xml:"Filter"`
 	StartingIndex  int    `xml:"StartingIndex"`
 	RequestedCount int    `xml:"RequestedCount"`
@@ -51,9 +70,18 @@ func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Re
 
 	switch {
 	case env.Body.Browse != nil:
-		s.handleBrowse(w, r, env.Body.Browse)
+		s.handleBrowse(w, r, env.Body.Browse, "BrowseResponse")
+	case env.Body.Search != nil:
+		s.handleBrowse(w, r, &browseArgs{
+			ObjectID:       env.Body.Search.ContainerID,
+			BrowseFlag:     "BrowseDirectChildren",
+			Filter:         env.Body.Search.Filter,
+			StartingIndex:  env.Body.Search.StartingIndex,
+			RequestedCount: env.Body.Search.RequestedCount,
+			SortCriteria:   env.Body.Search.SortCriteria,
+		}, "SearchResponse")
 	case env.Body.GetSearchCapabilities != nil:
-		writeSoapResponse(w, cdNS, "GetSearchCapabilitiesResponse", map[string]string{"SearchCaps": ""})
+		writeSoapResponse(w, cdNS, "GetSearchCapabilitiesResponse", map[string]string{"SearchCaps": "dc:title,upnp:class"})
 	case env.Body.GetSortCapabilities != nil:
 		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": ""})
 	case env.Body.GetSystemUpdateID != nil:
@@ -63,7 +91,7 @@ func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Re
 	}
 }
 
-func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *browseArgs) {
+func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *browseArgs, responseName string) {
 	baseURL := "http://" + r.Host
 
 	objectID := args.ObjectID
@@ -94,11 +122,14 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		}
 		namedPeople := countNamedPeople(people)
 
-		var b strings.Builder
-		b.WriteString(buildContainer("albums", "0", "Albums", len(albums)))
-		b.WriteString(buildContainer("people", "0", "People", namedPeople))
-		didl = wrapDIDL(b.String())
-		returned, total = 2, 2
+		fragments := []string{
+			buildContainer("albums", "0", "Albums", len(albums)),
+			buildContainer("people", "0", "People", namedPeople),
+		}
+		total = len(fragments)
+		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
+		didl = wrapDIDL(strings.Join(fragments, ""))
+		returned = len(fragments)
 
 	case objectID == "albums" && args.BrowseFlag == "BrowseMetadata":
 		albums, err := s.immich.ListAlbums()
@@ -117,12 +148,14 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
+		total = len(albums)
+		paged := page(albums, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
-		for _, a := range albums {
+		for _, a := range paged {
 			b.WriteString(buildContainer("album:"+a.ID, "albums", a.AlbumName, a.AssetCount))
 		}
 		didl = wrapDIDL(b.String())
-		returned, total = len(albums), len(albums)
+		returned = len(paged)
 
 	case objectID == "people" && args.BrowseFlag == "BrowseMetadata":
 		people, err := s.immich.ListPeople()
@@ -141,20 +174,23 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		var b strings.Builder
-		var n int
+		named := make([]immich.Person, 0, len(people))
 		for _, p := range people {
-			if !p.IsNamed() {
-				continue
+			if p.IsNamed() {
+				named = append(named, p)
 			}
+		}
+		total = len(named)
+		paged := page(named, args.StartingIndex, args.RequestedCount)
+		var b strings.Builder
+		for _, p := range paged {
 			// childCount omitted (-1): knowing it accurately would need one
 			// GetPersonStatistics call per person, which doesn't scale for
 			// libraries with many tagged people.
 			b.WriteString(buildContainer("person:"+p.ID, "people", p.Name, -1))
-			n++
 		}
 		didl = wrapDIDL(b.String())
-		returned, total = n, n
+		returned = len(paged)
 
 	case strings.HasPrefix(objectID, "album:"):
 		albumID := strings.TrimPrefix(objectID, "album:")
@@ -176,13 +212,15 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos)))
 			returned, total = 1, 1
 		} else {
+			total = len(photos)
+			paged := page(photos, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
-			for _, a := range photos {
+			for _, a := range paged {
 				resURL := baseURL + "/media/" + a.ID
 				b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
 			}
 			didl = wrapDIDL(b.String())
-			returned, total = len(photos), len(photos)
+			returned = len(paged)
 		}
 
 	case strings.HasPrefix(objectID, "person:"):
@@ -205,14 +243,15 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				return
 			}
 			photos := filterPhotos(assets)
+			total = len(photos)
+			paged := page(photos, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
-			for _, a := range photos {
+			for _, a := range paged {
 				resURL := baseURL + "/media/" + a.ID
 				b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
 			}
-			n := len(photos)
 			didl = wrapDIDL(b.String())
-			returned, total = n, n
+			returned = len(paged)
 		}
 
 	case strings.HasPrefix(objectID, "asset:"):
@@ -236,12 +275,28 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		log.Printf("Browse %s %s -> %d/%d items", objectID, args.BrowseFlag, returned, total)
 	}
 
-	writeSoapResponse(w, cdNS, "BrowseResponse", map[string]string{
+	writeSoapResponse(w, cdNS, responseName, map[string]string{
 		"Result":         didl,
 		"NumberReturned": strconv.Itoa(returned),
 		"TotalMatches":   strconv.Itoa(total),
 		"UpdateID":       "1",
 	})
+}
+
+// page applies UPnP ContentDirectory Browse pagination: RequestedCount 0
+// means "no limit". Ignoring StartingIndex/RequestedCount (as this server
+// used to) meant a client that paginates - anything browsing a container
+// with more items than fit in one page - received the identical full list
+// on every page instead of successive slices of it.
+func page[T any](items []T, startingIndex, requestedCount int) []T {
+	if startingIndex < 0 || startingIndex >= len(items) {
+		return nil
+	}
+	end := len(items)
+	if requestedCount > 0 && startingIndex+requestedCount < end {
+		end = startingIndex + requestedCount
+	}
+	return items[startingIndex:end]
 }
 
 // filterPhotos keeps only the photo assets (see Asset.IsPhoto) - we don't
@@ -266,6 +321,24 @@ func countNamedPeople(people []immich.Person) int {
 	return n
 }
 
+// xmlTextEscape escapes a string for use as XML element text content,
+// handling only the characters that are ever mandatory to escape there (&
+// and <; > is included for readability/safety but isn't required by the
+// spec). Deliberately not html.EscapeString: that also converts quotes to
+// &#34;/&#39;, which is correct but unnecessary in text content - and a
+// packet capture showed a real, working minidlna instance leaves quotes
+// unescaped when embedding a DIDL-Lite fragment (itself full of quoted
+// attributes) inside <Result>. Some DLNA clients (confirmed: the Samsung
+// SEC_HHP stack) apparently only undo &lt;/&gt;/&amp; before treating the
+// result as raw XML, so a Result value earlier escaped with html.EscapeString
+// left every attribute as e.g. id=&#34;0&#34; after that partial unescape -
+// invalid attribute syntax, silently breaking every container's attributes
+// including childCount, which is why the client never had anything worth
+// descending into.
+func xmlTextEscape(s string) string {
+	return strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;").Replace(s)
+}
+
 // writeSoapResponse wraps arbitrary out-arguments in a SOAP 1.1 envelope,
 // escaping each value for use as XML text content.
 func writeSoapResponse(w http.ResponseWriter, serviceNS, actionResponseName string, args map[string]string) {
@@ -279,14 +352,50 @@ func writeSoapResponse(w http.ResponseWriter, serviceNS, actionResponseName stri
 	fmt.Fprintf(&body, `<u:%s xmlns:u="%s">`, actionResponseName, serviceNS)
 	for _, k := range order {
 		if v, ok := args[k]; ok {
-			fmt.Fprintf(&body, "<%s>%s</%s>", k, html.EscapeString(v), k)
+			fmt.Fprintf(&body, "<%s>%s</%s>", k, xmlTextEscape(v), k)
 		}
 	}
 	fmt.Fprintf(&body, `</u:%s>`, actionResponseName)
 
-	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	_, _ = fmt.Fprintf(w, `<?xml version="1.0"?>`+
-		`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" `+
-		`s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">`+
-		`<s:Body>%s</s:Body></s:Envelope>`, body.String())
+	envelope := "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n" +
+		`<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" ` +
+		`s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">` +
+		`<s:Body>` + body.String() + `</s:Body></s:Envelope>`
+	writeRawUPnPResponse(w, envelope)
+}
+
+// writeRawUPnPResponse writes the response with the exact header
+// name/casing/order/spacing a real minidlna instance sends (verified via
+// packet capture against a Samsung TV that would only ever call
+// BrowseMetadata, never BrowseDirectChildren, against our previous
+// Header().Set()-based responses): notably "EXT:" with no trailing space,
+// which Go's normal header writer cannot produce (it always inserts ": ").
+// http.ResponseWriter offers no way to do this, so the connection is
+// hijacked and the response written by hand.
+func writeRawUPnPResponse(w http.ResponseWriter, body string) {
+	hj, ok := w.(http.Hijacker)
+	conn, buf, err := func() (net.Conn, *bufio.ReadWriter, error) {
+		if !ok {
+			return nil, nil, http.ErrNotSupported
+		}
+		return hj.Hijack()
+	}()
+	if err != nil {
+		// Not every ResponseWriter supports hijacking (e.g. httptest's
+		// ResponseRecorder in tests) - fall back to a normal response.
+		w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
+		_, _ = io.WriteString(w, body)
+		return
+	}
+	defer func() { _ = conn.Close() }()
+
+	fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\n"+
+		"Content-Type: text/xml; charset=\"utf-8\"\r\n"+
+		"Connection: close\r\n"+
+		"Content-Length: %d\r\n"+
+		"Server: Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0\r\n"+
+		"Date: %s\r\n"+
+		"EXT:\r\n\r\n%s",
+		len(body), time.Now().UTC().Format(http.TimeFormat), body)
+	_ = buf.Flush()
 }

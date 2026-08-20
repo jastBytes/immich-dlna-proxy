@@ -11,23 +11,28 @@ import (
 // negative childCount to omit the attribute entirely (DLNA clients treat
 // a container without childCount as "browsable, count unknown" rather
 // than empty) - useful when reporting an accurate count would require an
-// extra API call per item.
+// extra API call per item. Every container carries searchable="1" and
+// upnp:storageUsed, and the root ("0") additionally advertises an
+// upnp:searchClass for photo items - verified against a real minidlna
+// instance browsing successfully on a Samsung TV that got stuck forever
+// on BrowseMetadata against our earlier, sparser responses.
 func buildContainer(id, parentID, title string, childCount int) string {
-	if childCount < 0 {
-		return fmt.Sprintf(
-			`<container id="%s" parentID="%s" restricted="1">`+
-				`<dc:title>%s</dc:title>`+
-				`<upnp:class>object.container.storageFolder</upnp:class>`+
-				`</container>`,
-			xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title),
-		)
+	childCountAttr := ""
+	if childCount >= 0 {
+		childCountAttr = fmt.Sprintf(` childCount="%d"`, childCount)
+	}
+	searchClass := ""
+	if id == "0" {
+		searchClass = `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>`
 	}
 	return fmt.Sprintf(
-		`<container id="%s" parentID="%s" restricted="1" childCount="%d">`+
+		`<container id="%s" parentID="%s" restricted="1" searchable="1"%s>`+
+			`%s`+
 			`<dc:title>%s</dc:title>`+
 			`<upnp:class>object.container.storageFolder</upnp:class>`+
+			`<upnp:storageUsed>-1</upnp:storageUsed>`+
 			`</container>`,
-		xmlAttrEscape(id), xmlAttrEscape(parentID), childCount, html.EscapeString(title),
+		xmlAttrEscape(id), xmlAttrEscape(parentID), childCountAttr, searchClass, html.EscapeString(title),
 	)
 }
 
@@ -54,13 +59,22 @@ func buildPhotoItem(id, parentID, title, mimeType, resURL string) string {
 }
 
 // wrapDIDL wraps one or more container/item fragments in the DIDL-Lite
-// envelope DLNA clients expect inside the SOAP Result element.
+// envelope DLNA clients expect inside the SOAP Result element. No XML
+// declaration is included - it's already inside the outer SOAP response's
+// text content, and a nested "<?xml ...?>" there is not something any
+// reference DLNA server (minidlna included) emits. xmlns:sec is Samsung's
+// own extension namespace (http://www.sec.co.kr/dlna) - a packet capture
+// of a real Samsung TV browsing a working minidlna instance showed it
+// declared on every DIDL-Lite response even when unused, and dropping it
+// is the one difference that correlated with the TV refusing to browse
+// past root on our server.
 func wrapDIDL(items string) string {
 	var b strings.Builder
-	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>`)
-	b.WriteString(`<DIDL-Lite xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ` +
-		`xmlns:dc="http://purl.org/dc/elements/1.1/" ` +
-		`xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/">`)
+	b.WriteString(`<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" ` +
+		`xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" ` +
+		`xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" ` +
+		`xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/" ` +
+		`xmlns:sec="http://www.sec.co.kr/dlna">`)
 	b.WriteString(items)
 	b.WriteString(`</DIDL-Lite>`)
 	return b.String()

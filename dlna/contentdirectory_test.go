@@ -134,6 +134,51 @@ func TestBrowseRootShowsAlbumsAndPeopleFolders(t *testing.T) {
 	}
 }
 
+func TestSearchOnRootBehavesLikeBrowseDirectChildren(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Search xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <ContainerID>0</ContainerID>
+      <SearchCriteria></SearchCriteria>
+      <Filter>*</Filter>
+      <StartingIndex>0</StartingIndex>
+      <RequestedCount>0</RequestedCount>
+      <SortCriteria></SortCriteria>
+    </u:Search>
+  </s:Body>
+</s:Envelope>`
+
+	req, err := http.NewRequest(http.MethodPost, ts+"/ctl/ContentDirectory", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+	req.Header.Set("SOAPACTION", `"urn:schemas-upnp-org:service:ContentDirectory:1#Search"`)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Search: unexpected status %s", resp.Status)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(raw), "SearchResponse") {
+		t.Errorf("expected SearchResponse, got: %s", raw)
+	}
+	if !strings.Contains(string(raw), `id="albums"`) || !strings.Contains(string(raw), `id="people"`) {
+		t.Errorf("expected Search on root to behave like BrowseDirectChildren, got: %s", raw)
+	}
+}
+
 func TestBrowseAlbumsListsAlbums(t *testing.T) {
 	ts := newTestServerWithFakeImmich(t)
 
@@ -401,4 +446,39 @@ func TestHandleContentDirectoryControlBadEnvelope(t *testing.T) {
 	if code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400", code)
 	}
+}
+
+func TestPage(t *testing.T) {
+	items := []int{0, 1, 2, 3, 4}
+
+	if got := page(items, 0, 0); len(got) != 5 {
+		t.Errorf("RequestedCount 0 means no limit, got %v", got)
+	}
+	if got := page(items, 0, 2); !equalInts(got, []int{0, 1}) {
+		t.Errorf("first page = %v, want [0 1]", got)
+	}
+	if got := page(items, 2, 2); !equalInts(got, []int{2, 3}) {
+		t.Errorf("second page = %v, want [2 3]", got)
+	}
+	if got := page(items, 4, 2); !equalInts(got, []int{4}) {
+		t.Errorf("last partial page = %v, want [4]", got)
+	}
+	if got := page(items, 5, 2); len(got) != 0 {
+		t.Errorf("StartingIndex at end = %v, want empty", got)
+	}
+	if got := page(items, 10, 2); len(got) != 0 {
+		t.Errorf("StartingIndex past end = %v, want empty", got)
+	}
+}
+
+func equalInts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
