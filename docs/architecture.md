@@ -145,13 +145,34 @@ differently depending on whether the disk cache is enabled (the default):
   `Last-Modified` automatically. No Immich call happens at all.
 - **Cache miss:** the proxy downloads the *complete* original from
   Immich (ignoring any `Range` header on the inbound request - it always
-  wants the whole file to cache it), writes it to disk, then serves it
+  wants the whole file), normalizes its EXIF orientation and downscales
+  it as configured (see [Orientation](#orientation) and
+  [Downscaling](#downscaling)), writes the result to disk, then serves it
   from the newly written file the same way as a cache hit. This means
   the very first view of a photo waits for the full download before any
   bytes reach the TV; subsequent views are effectively instant.
-- **Cache disabled** (`DISABLE_CACHE=true`): falls back to directly
-  proxying bytes from Immich on every request, forwarding the `Range`
-  header as-is. Nothing is written to disk.
+- **Cache disabled** (`DISABLE_CACHE=true`): same download, orientation
+  fix, and optional downscale as a cache miss above, but the result is
+  served straight from memory instead of being written to disk.
+
+## Orientation
+
+Every JPEG is checked for an EXIF orientation tag (`imageproc/orientation.go`)
+before being cached/served, regardless of whether `MAX_RESOLUTION` is set.
+
+- Most DLNA renderers (TVs, media players) show the raw pixel grid and
+  ignore the EXIF orientation tag entirely. Phone cameras commonly record
+  portrait photos "sideways" with a rotate-90 tag rather than rotating the
+  pixels themselves, since that's cheaper for the camera - so without this
+  step, those photos show up sideways on a TV even though photo apps that
+  honor EXIF display them correctly.
+- If the tag says anything other than "normal" (1), the proxy decodes the
+  image, bakes the required rotation/flip into the pixels, and re-encodes
+  without the tag (so the now-correct pixels aren't rotated again by a
+  renderer that *does* honor EXIF). If there's no tag, or it's already 1,
+  the image is left untouched.
+- Only JPEG is supported (the format that carries EXIF here); other
+  formats pass through unchanged.
 
 ## Caching
 
@@ -196,11 +217,9 @@ cached/served. See [`imageproc/resize.go`](../imageproc/resize.go).
   header to check dimensions, and the (comparatively expensive) full
   decode + box filter + re-encode only runs when the image actually
   exceeds the configured bounds.
-- Because a full decode is required, `MAX_RESOLUTION` + `DISABLE_CACHE`
-  together means every request buffers the whole photo in memory rather
-  than using the lighter-weight Range-passthrough proxy path. This is
-  usually fine for photos, but means the "efficient streaming" fast path
-  described above only applies when downscaling is off.
+- Every request already buffers and decodes the full photo in memory for
+  [orientation](#orientation) normalization, so `MAX_RESOLUTION` doesn't
+  cost an extra decode pass on top of that.
 
 ## What isn't implemented
 
