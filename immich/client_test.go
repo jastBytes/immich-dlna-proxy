@@ -277,6 +277,49 @@ func TestDownloadOriginal(t *testing.T) {
 	}
 }
 
+func TestGetAssetThumbnail(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/assets/a1/thumbnail" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.URL.Query().Get("size") != "preview" {
+			t.Errorf("size query = %q, want preview", r.URL.Query().Get("size"))
+		}
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("thumbbytes"))
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	body, mimeType, err := client.GetAssetThumbnail("a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	if mimeType != "image/jpeg" {
+		t.Errorf("mimeType = %q", mimeType)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "thumbbytes" {
+		t.Errorf("body = %q", data)
+	}
+}
+
+func TestGetAssetThumbnailErrorStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	if _, _, err := client.GetAssetThumbnail("missing"); err == nil {
+		t.Fatal("expected error for non-200 status")
+	}
+}
+
 // stubRoundTripper returns a fixed response without going over the wire,
 // which lets us produce a response with no Content-Type header at all -
 // something a real net/http server won't do, since it auto-sniffs one.

@@ -214,6 +214,32 @@ func (c *Client) GetAsset(id string) (*Asset, error) {
 	return &asset, nil
 }
 
+// GetAssetThumbnail fetches Immich's server-generated preview-sized
+// thumbnail for an asset. A video's own bytes can't double as an image
+// preview the way a photo's can, so video items use this instead of
+// DownloadOriginal for their DIDL-Lite albumArtURI.
+func (c *Client) GetAssetThumbnail(assetID string) (body io.ReadCloser, mimeType string, err error) {
+	req, err := c.newRequest(http.MethodGet, "/api/assets/"+assetID+"/thumbnail?size=preview")
+	if err != nil {
+		return nil, "", err
+	}
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, "", fmt.Errorf("immich GetAssetThumbnail(%s): unexpected status %s", assetID, resp.Status)
+	}
+
+	mimeType = resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	return resp.Body, mimeType, nil
+}
+
 // DownloadOriginal fetches the complete original file. It never forwards a
 // Range header, since callers always need the whole object (to decode it
 // for EXIF orientation / resizing, or to populate the disk cache).

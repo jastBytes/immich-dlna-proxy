@@ -23,7 +23,8 @@ func buildContainer(id, parentID, title string, childCount int) string {
 	}
 	searchClass := ""
 	if id == "0" {
-		searchClass = `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>`
+		searchClass = `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>` +
+			`<upnp:searchClass includeDerived="1">object.item.videoItem</upnp:searchClass>`
 	}
 	return fmt.Sprintf(
 		`<container id="%s" parentID="%s" restricted="1" searchable="1"%s>`+
@@ -36,25 +37,32 @@ func buildContainer(id, parentID, title string, childCount int) string {
 	)
 }
 
-// buildPhotoItem renders one DIDL-Lite <item> element for a photo asset.
-// resURL must be an absolute http(s) URL the client can GET (and ideally
-// range-request) to fetch the bytes. albumArtURI reuses the same URL:
-// without it, media browsers like Home Assistant's list titles but show a
-// placeholder icon instead of a thumbnail (they don't fall back to <res>
-// for previews).
-func buildPhotoItem(id, parentID, title, mimeType, resURL string) string {
+// buildItem renders one DIDL-Lite <item> element for a photo or video
+// asset. resURL must be an absolute http(s) URL the client can GET (and
+// ideally range-request) to fetch the bytes. albumArtURL is what
+// upnp:albumArtURI points at: without it, media browsers like Home
+// Assistant's list titles but show a placeholder icon instead of a
+// thumbnail (they don't fall back to <res> for previews). For a photo,
+// albumArtURL is typically the same as resURL (the photo is its own
+// thumbnail); for a video it must point at a real image instead, since a
+// browser fetching albumArtURI can't decode a video file as one.
+func buildItem(id, parentID, title, mimeType, resURL, albumArtURL string, isVideo bool) string {
+	class, defaultMime := "object.item.imageItem.photo", "image/jpeg"
+	if isVideo {
+		class, defaultMime = "object.item.videoItem.movie", "video/mp4"
+	}
 	if mimeType == "" {
-		mimeType = "image/jpeg"
+		mimeType = defaultMime
 	}
 	return fmt.Sprintf(
 		`<item id="%s" parentID="%s" restricted="1">`+
 			`<dc:title>%s</dc:title>`+
-			`<upnp:class>object.item.imageItem.photo</upnp:class>`+
+			`<upnp:class>%s</upnp:class>`+
 			`<upnp:albumArtURI>%s</upnp:albumArtURI>`+
 			`<res protocolInfo="http-get:*:%s:*">%s</res>`+
 			`</item>`,
-		xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title),
-		html.EscapeString(resURL), mimeType, html.EscapeString(resURL),
+		xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title), class,
+		html.EscapeString(albumArtURL), mimeType, html.EscapeString(resURL),
 	)
 }
 

@@ -6,8 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A single Go binary, no external dependencies (standard library only),
 that exposes an Immich server's albums and named people as a DLNA
-MediaServer so Smart TVs can browse and view the photos. Only
-`type == "IMAGE"` assets are handled — video is out of scope for now.
+MediaServer so Smart TVs can browse and view the photos and videos in
+them. Assets of `type == "IMAGE"` or `type == "VIDEO"` are handled; any
+other type (e.g. audio) is skipped.
 
 ## Commands
 
@@ -47,10 +48,10 @@ concurrently. Each package has one job:
 | Package | Responsibility |
 |---|---|
 | `config/` | Reads and validates env vars at startup (`config.Load()`); fails fast with a clear message rather than falling back to silent defaults for malformed values (e.g. non-numeric `CACHE_MAX_MB`). |
-| `immich/` | Thin REST client for the Immich API (`client.go`) and the JSON shapes it expects (`types.go`) — `GET /api/albums`, `/api/albums/{id}`, `/api/people`, `/api/people/{id}/assets`, `/api/assets/{id}/original`. |
-| `cache/` | LRU disk cache for original photo bytes, keyed by asset ID. Not used for album/asset/people *listings* — only for `/media/{id}` bytes. |
-| `imageproc/` | Box-filter downscaling for `MAX_RESOLUTION`, JPEG/PNG only. |
-| `dlna/` | Everything protocol-facing: SSDP discovery, UPnP description XML, ContentDirectory/ConnectionManager/X_MS_MediaReceiverRegistrar SOAP actions, DIDL-Lite XML building, and the `/media/{id}` HTTP handler. |
+| `immich/` | Thin REST client for the Immich API (`client.go`) and the JSON shapes it expects (`types.go`) — `GET /api/albums`, `/api/albums/{id}`, `/api/people`, `/api/people/{id}/assets`, `/api/assets/{id}/original`, `/api/assets/{id}/thumbnail`. |
+| `cache/` | LRU disk cache for original photo/video bytes, keyed by asset ID. Not used for album/asset/people *listings*, and not used for `/thumbnail/{id}` — only for `/media/{id}` bytes. |
+| `imageproc/` | Box-filter downscaling for `MAX_RESOLUTION`, JPEG/PNG only; a no-op passthrough for video and other formats. |
+| `dlna/` | Everything protocol-facing: SSDP discovery, UPnP description XML, ContentDirectory/ConnectionManager/X_MS_MediaReceiverRegistrar SOAP actions, DIDL-Lite XML building, and the `/media/{id}` / `/thumbnail/{id}` HTTP handlers. |
 
 A DLNA client talks to the proxy in three stages, each owned by a
 different file in `dlna/`:
@@ -84,26 +85,42 @@ different file in `dlna/`:
 |---|---|---|
 | `0` (root) | — | containers `albums`, `people` |
 | `albums` | `GET /api/albums` | one container per album |
-| `album:<id>` | `GET /api/albums/{id}` | one item per photo (filtered to `IMAGE`) |
+| `album:<id>` | `GET /api/albums/{id}` | one item per photo/video (filtered to `IMAGE`/`VIDEO`) |
 | `people` | `GET /api/people` | one container per *named* person (unnamed face clusters skipped) |
-| `person:<id>` | `GET /api/people/{id}/assets` | one item per photo (filtered to `IMAGE`) |
+| `person:<id>` | `GET /api/people/{id}/assets` | one item per photo/video (filtered to `IMAGE`/`VIDEO`) |
 | `asset:<id>` | — | `<res>` points at `/media/{assetID}` |
 
-Every photo `<item>` (from `album:<id>`, `person:<id>`, or `asset:<id>`)
-also carries an `<upnp:albumArtURI>` pointing at the same `/media/{id}`
-URL — without it, some media browsers (e.g. Home Assistant) list titles
-but show a placeholder icon instead of a thumbnail.
+`buildAssetItem` (`contentdirectory.go`) picks each item's `<upnp:class>`
+(`object.item.imageItem.photo` vs `object.item.videoItem.movie`) and
+`<upnp:albumArtURI>` based on `Asset.IsVideo()`: a photo uses its own
+`/media/{id}` URL as its own thumbnail, but a video's bytes can't double
+as an image preview, so its albumArtURI instead points at
+`/thumbnail/{id}` — without *some* albumArtURI, media browsers (e.g. Home
+Assistant) list titles but show a placeholder icon instead of a
+thumbnail.
 
 Every `Browse` call hits Immich live; listings are never cached, only
-the image bytes behind `/media/{id}`.
+the bytes behind `/media/{id}`.
 
 **Media streaming** (`server.go`, `GET /media/{assetID}`): on cache hit,
 serves straight from `CACHE_DIR` via `http.ServeContent` (handles
 `Range`/`ETag` for free), no Immich call. On cache miss, downloads the
-*full* original from Immich regardless of any inbound `Range` header,
-writes it to disk (temp file + `os.Rename` for atomicity), then serves
-it. With `DISABLE_CACHE=true`, every request proxies live from Immich
-instead, forwarding `Range` as-is.
+*full* original from Immich regardless of any inbound `Range` header.
+Photos are buffered into memory (needed anyway for orientation/resize),
+then written to disk. Videos skip that buffering — `isVideoMimeType`
+routes them to `serveVideo`, which streams Immich's response body
+straight into `cache.Put` (or straight to the client with caching
+disabled) rather than reading a potentially multi-gigabyte file fully
+into memory first. Either way the result is written to disk (temp file +
+`os.Rename` for atomicity) then served from there, so `Range` works for
+seeking. With `DISABLE_CACHE=true`, the equivalent path streams straight
+to the response instead of disk — for video that means no `Range`
+support, an accepted trade-off for that already-opt-out mode.
+
+**Thumbnails** (`server.go`, `GET /thumbnail/{assetID}`): proxies
+Immich's `/api/assets/{id}/thumbnail?size=preview` uncached. Only used
+for video items' `albumArtURI` (see above) — small enough, and cheap
+enough for Immich to regenerate, that caching isn't worth it.
 
 **Cache** (`cache/cache.go`): each asset is two files — `<assetID>`
 (bytes) and `<assetID>.type` (MIME sidecar). "Last used" = file mtime,
@@ -133,10 +150,10 @@ deployment).
   clear error rather than defaulting silently on malformed input.
 - Env-var-driven configuration only; there is no config file format to
   maintain.
-- Unsupported inputs (video assets, unnamed people, non-JPEG/PNG for
-  downscaling) are deliberately skipped/passed-through rather than
-  erroring — match that pattern rather than introducing hard failures
-  for known-unsupported cases.
+- Unsupported inputs (asset types other than `IMAGE`/`VIDEO`, unnamed
+  people, non-JPEG/PNG for downscaling) are deliberately
+  skipped/passed-through rather than erroring — match that pattern
+  rather than introducing hard failures for known-unsupported cases.
 - Keep `docs/architecture.md` and `docs/configuration.md` in sync with
   behavior changes — they're the canonical detailed reference, not just
   supplementary.
