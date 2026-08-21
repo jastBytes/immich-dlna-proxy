@@ -174,3 +174,13 @@ in `release.yml`).
   app are useful for poking at the server independently of a TV.
 - Album covers/thumbnails for the folder view itself aren't implemented
   (some DLNA clients show a folder icon; this is cosmetic).
+
+## Security
+
+The server has no authentication and isn't meant to be exposed beyond a
+trusted LAN — see [SECURITY.md](SECURITY.md) for the reasoning and how to
+report a vulnerability.
+
+## License
+
+[MIT](LICENSE)
