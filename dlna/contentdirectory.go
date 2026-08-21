@@ -389,13 +389,15 @@ func writeRawUPnPResponse(w http.ResponseWriter, body string) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\n"+
+	if _, err := fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\n"+
 		"Content-Type: text/xml; charset=\"utf-8\"\r\n"+
 		"Connection: close\r\n"+
 		"Content-Length: %d\r\n"+
 		"Server: Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0\r\n"+
 		"Date: %s\r\n"+
 		"EXT:\r\n\r\n%s",
-		len(body), time.Now().UTC().Format(http.TimeFormat), body)
+		len(body), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
+		return
+	}
 	_ = buf.Flush()
 }
