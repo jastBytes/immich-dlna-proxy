@@ -1,0 +1,62 @@
+name: Device / DLNA client compatibility
+description: A specific TV or DLNA client can't discover, browse, or play from the proxy
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DLNA client quirks are common — different TVs/clients need
+        different parts of the protocol (SSDP discovery, description XML,
+        SOAP `Browse`, or `X_MS_MediaReceiverRegistrar`). Details here help
+        narrow down which stage is failing.
+
+  - type: input
+    id: device
+    attributes:
+      label: Device / client
+      description: Make and model, or software name + version
+      placeholder: Samsung Q80T (2020), firmware 1234.5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where does it fail?
+      options:
+        - Discovery — device doesn't find the server at all
+        - Browsing — server found, but folders/photos don't show or are empty
+        - Playback — photo listed but won't open / shows broken image
+        - Not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: network
+    attributes:
+      label: Network setup
+      options:
+        - Docker with --network host
+        - Docker with bridge networking
+        - Unraid template
+        - Bare metal / go run
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happens?
+      description: What you see on the device, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Proxy logs
+      description: Logs from around when you tried to discover/browse/play on the device. Redact secrets/URLs you don't want to share.
+      render: shell
+    validations:
+      required: false
