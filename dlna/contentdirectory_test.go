@@ -348,14 +348,14 @@ func newTestServerWithUnsortedFakeImmich(t *testing.T) (srvURL string) {
 			case strings.Contains(string(body), `"albumIds"`):
 				_, _ = w.Write([]byte(`{"assets":{"total":2,"count":2,"nextPage":null,
 					"items":[
-						{"id":"photo-zzz","originalFileName":"zzz.jpg","originalMimeType":"image/jpeg","type":"IMAGE"},
-						{"id":"photo-aaa","originalFileName":"aaa.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}
+						{"id":"photo-zzz","originalFileName":"zzz.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-06-01T00:00:00Z"},
+						{"id":"photo-aaa","originalFileName":"aaa.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2020-01-01T00:00:00Z"}
 					]}}`))
 			case strings.Contains(string(body), `"personIds"`):
 				_, _ = w.Write([]byte(`{"assets":{"total":2,"count":2,"nextPage":null,
 					"items":[
-						{"id":"photo-zzz","originalFileName":"zzz.jpg","originalMimeType":"image/jpeg","type":"IMAGE"},
-						{"id":"photo-aaa","originalFileName":"aaa.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}
+						{"id":"photo-zzz","originalFileName":"zzz.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-06-01T00:00:00Z"},
+						{"id":"photo-aaa","originalFileName":"aaa.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2020-01-01T00:00:00Z"}
 					]}}`))
 			default:
 				http.NotFound(w, r)
@@ -419,6 +419,35 @@ func TestBrowseHonorsSortCriteriaOnPersonPhotos(t *testing.T) {
 	ascending := didlResult(t, browseSorted(t, ts, "person:person1", "BrowseDirectChildren", "+dc:title"))
 	if strings.Index(ascending, "aaa.jpg") > strings.Index(ascending, "zzz.jpg") || !strings.Contains(ascending, "aaa.jpg") {
 		t.Errorf("expected aaa.jpg before zzz.jpg with +dc:title, got: %s", ascending)
+	}
+}
+
+// TestBrowseHonorsSortCriteriaOnAlbumPhotosByDate exercises "-dc:date"
+// (newest capture first): zzz.jpg is the newer photo (2024) despite
+// sorting last alphabetically, and aaa.jpg is the older one (2020) despite
+// sorting first alphabetically - so this only passes if dc:date sorting
+// is actually driven by fileCreatedAt rather than accidentally matching
+// the dc:title test's alphabetical order.
+func TestBrowseHonorsSortCriteriaOnAlbumPhotosByDate(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	newestFirst := didlResult(t, browseSorted(t, ts, "album:album1", "BrowseDirectChildren", "-dc:date"))
+	if strings.Index(newestFirst, "zzz.jpg") > strings.Index(newestFirst, "aaa.jpg") || !strings.Contains(newestFirst, "zzz.jpg") {
+		t.Errorf("expected newer zzz.jpg before older aaa.jpg with -dc:date, got: %s", newestFirst)
+	}
+
+	oldestFirst := didlResult(t, browseSorted(t, ts, "album:album1", "BrowseDirectChildren", "+dc:date"))
+	if strings.Index(oldestFirst, "aaa.jpg") > strings.Index(oldestFirst, "zzz.jpg") || !strings.Contains(oldestFirst, "aaa.jpg") {
+		t.Errorf("expected older aaa.jpg before newer zzz.jpg with +dc:date, got: %s", oldestFirst)
+	}
+}
+
+func TestBrowseHonorsSortCriteriaOnPersonPhotosByDate(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	newestFirst := didlResult(t, browseSorted(t, ts, "person:person1", "BrowseDirectChildren", "-dc:date"))
+	if strings.Index(newestFirst, "zzz.jpg") > strings.Index(newestFirst, "aaa.jpg") || !strings.Contains(newestFirst, "zzz.jpg") {
+		t.Errorf("expected newer zzz.jpg before older aaa.jpg with -dc:date, got: %s", newestFirst)
 	}
 }
 
@@ -550,8 +579,8 @@ func TestHandleContentDirectoryControlGetSortCapabilities(t *testing.T) {
 	if !strings.Contains(resp, "GetSortCapabilitiesResponse") {
 		t.Errorf("expected GetSortCapabilitiesResponse, got: %s", resp)
 	}
-	if !strings.Contains(resp, "<SortCaps>dc:title</SortCaps>") {
-		t.Errorf("expected SortCaps to advertise dc:title, got: %s", resp)
+	if !strings.Contains(resp, "<SortCaps>dc:title,dc:date</SortCaps>") {
+		t.Errorf("expected SortCaps to advertise dc:title,dc:date, got: %s", resp)
 	}
 }
 
