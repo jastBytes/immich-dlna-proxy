@@ -1,1 +1,9 @@
 tmp/
+dist/
+*.test
+*.out
+
+.idea/
+.vscode/
+*.swp
+.DS_Store
