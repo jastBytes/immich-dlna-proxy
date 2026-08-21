@@ -187,6 +187,38 @@ func TestGetPersonAssetsUsesPersonIdsFilter(t *testing.T) {
 	}
 }
 
+func TestListTimelineAssetsUsesOrderDesc(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var reqBody struct {
+			Order     string   `json:"order"`
+			AlbumIds  []string `json:"albumIds"`
+			PersonIds []string `json:"personIds"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &reqBody); err != nil {
+			t.Fatalf("bad request body: %v", err)
+		}
+		if reqBody.Order != "desc" {
+			t.Fatalf("expected order=desc, got %q", reqBody.Order)
+		}
+		if len(reqBody.AlbumIds) != 0 || len(reqBody.PersonIds) != 0 {
+			t.Fatalf("expected no albumIds/personIds filter, got %+v", reqBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,"items":[{"id":"a1","originalFileName":"a1.jpg","type":"IMAGE"}]}}`))
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	assets, err := client.ListTimelineAssets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(assets) != 1 || assets[0].ID != "a1" {
+		t.Fatalf("unexpected assets: %+v", assets)
+	}
+}
+
 func TestSearchMetadataAssetsErrorStatus(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

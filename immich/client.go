@@ -88,7 +88,7 @@ func (c *Client) GetAlbum(id string) (*Album, error) {
 
 // GetAlbumAssets returns every asset (photo or video) in the given album.
 func (c *Client) GetAlbumAssets(albumID string) ([]Asset, error) {
-	return c.searchMetadataAssets("albumIds", albumID)
+	return c.searchMetadataAssets(map[string]any{"albumIds": []string{albumID}})
 }
 
 // ListPeople returns named, non-hidden people (GET /api/people defaults to
@@ -137,17 +137,25 @@ func (c *Client) GetPerson(id string) (*Person, error) {
 
 // GetPersonAssets returns every asset (photo or video) this person appears in.
 func (c *Client) GetPersonAssets(personID string) ([]Asset, error) {
-	return c.searchMetadataAssets("personIds", personID)
+	return c.searchMetadataAssets(map[string]any{"personIds": []string{personID}})
 }
 
-// searchMetadataAssets fetches every asset matching a single-value filter
-// (e.g. albumIds/personIds) via POST /api/search/metadata, following
-// "nextPage" until the server stops returning one.
-func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
+// ListTimelineAssets returns every asset (photo or video) visible to the API
+// key's owner, most recently taken first - the same chronological order
+// Immich's own web/mobile timeline view uses.
+func (c *Client) ListTimelineAssets() ([]Asset, error) {
+	return c.searchMetadataAssets(map[string]any{"order": "desc"})
+}
+
+// searchMetadataAssets fetches every asset matching the given filter body
+// (e.g. {"albumIds": [...]}, {"personIds": [...]}, or {"order": "desc"} for
+// no filter at all) via POST /api/search/metadata, following "nextPage"
+// until the server stops returning one.
+func (c *Client) searchMetadataAssets(filter map[string]any) ([]Asset, error) {
 	var all []Asset
 	page := 1
 	for {
-		reqBody, err := json.Marshal(map[string]any{filterField: []string{id}, "page": page})
+		reqBody, err := json.Marshal(mergePage(filter, page))
 		if err != nil {
 			return nil, err
 		}
@@ -165,7 +173,7 @@ func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
 		}
 		if resp.StatusCode != http.StatusOK {
 			_ = resp.Body.Close()
-			return nil, fmt.Errorf("immich searchMetadata(%s=%s): unexpected status %s", filterField, id, resp.Status)
+			return nil, fmt.Errorf("immich searchMetadata(%v): unexpected status %s", filter, resp.Status)
 		}
 		var out struct {
 			Assets struct {
@@ -189,6 +197,17 @@ func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
 		}
 		page = next
 	}
+}
+
+// mergePage returns a copy of filter with "page" set, leaving the caller's
+// map untouched (it's reused across pagination requests).
+func mergePage(filter map[string]any, page int) map[string]any {
+	body := make(map[string]any, len(filter)+1)
+	for k, v := range filter {
+		body[k] = v
+	}
+	body["page"] = page
+	return body
 }
 
 // GetAsset returns metadata for a single asset (used to know its mime type

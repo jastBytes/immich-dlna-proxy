@@ -76,18 +76,26 @@ service supports.
 This is where Immich data gets turned into DLNA objects. The client
 issues a SOAP `Browse` action against `/ctl/ContentDirectory` with an
 `ObjectID` and a `BrowseFlag` (`BrowseDirectChildren` to list children,
-`BrowseMetadata` to describe the object itself). The root exposes two
-fixed folders, "Albums" and "People"; the proxy maps object IDs to
-Immich concepts like this:
+`BrowseMetadata` to describe the object itself). The root exposes three
+fixed folders, "Albums", "People", and "Timeline"; the proxy maps object
+IDs to Immich concepts like this:
 
 | ObjectID | Represents | `BrowseDirectChildren` returns |
 |---|---|---|
-| `0` | Root | Two containers: `albums` and `people` |
+| `0` | Root | Three containers: `albums`, `people`, and `timeline` |
 | `albums` | "Albums" folder | One `container` per album (`GET /api/albums`) |
 | `album:<id>` | One album | One `item` per **photo** asset in that album (`GET /api/albums/{id}`, filtered to `type == "IMAGE"`) |
 | `people` | "People" folder | One `container` per **named** person (`GET /api/people`, filtered to entries with a non-empty `name` - unconfirmed/unnamed face clusters are skipped) |
 | `person:<id>` | One person | One `item` per photo they appear in (`GET /api/people/{id}/assets`, filtered to `type == "IMAGE"`) |
+| `timeline` | "Timeline" folder | One `item` per photo across the whole library, most recently taken first (`POST /api/search/metadata` with `order: "desc"` and no album/person filter, filtered to `type == "IMAGE"`) |
 | `asset:<id>` | One photo | N/A (items have no children); `BrowseMetadata` returns the item itself |
+
+Neither "People" nor "Timeline" report a `childCount` at the root (both
+omit the DIDL-Lite attribute, `-1`): for "Timeline" specifically, getting
+an accurate count would mean paginating through every asset in the
+library just to render the root listing, which doesn't scale for large
+libraries - same reasoning as the People folder below, just applied to
+the whole library instead of per-person.
 
 Each `Browse` call hits the Immich API fresh - album/asset/people
 **listings** are not cached (only the underlying image bytes are, see

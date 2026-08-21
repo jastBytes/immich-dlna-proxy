@@ -138,6 +138,9 @@ func newTestServerWithFakeImmich(t *testing.T) (srvURL string) {
 			case strings.Contains(string(body), `"personIds"`):
 				_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
 					"items":[{"id":"photo2","originalFileName":"alice.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
+			case strings.Contains(string(body), `"order":"desc"`):
+				_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+					"items":[{"id":"photo3","originalFileName":"newest.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
 			default:
 				http.NotFound(w, r)
 			}
@@ -169,8 +172,35 @@ func TestBrowseRootShowsAlbumsAndPeopleFolders(t *testing.T) {
 	if !strings.Contains(didl, `id="people"`) {
 		t.Errorf("expected a 'people' container at root, got: %s", didl)
 	}
-	if !strings.Contains(didl, "Albums") || !strings.Contains(didl, "People") {
-		t.Errorf("expected titles 'Albums' and 'People', got: %s", didl)
+	if !strings.Contains(didl, `id="timeline"`) {
+		t.Errorf("expected a 'timeline' container at root, got: %s", didl)
+	}
+	if !strings.Contains(didl, "Albums") || !strings.Contains(didl, "People") || !strings.Contains(didl, "Timeline") {
+		t.Errorf("expected titles 'Albums', 'People', and 'Timeline', got: %s", didl)
+	}
+}
+
+func TestBrowseTimelineListsAllPhotosNewestFirst(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "timeline", "BrowseDirectChildren"))
+	if !strings.Contains(didl, `id="asset:photo3"`) {
+		t.Errorf("expected photo3 item under timeline, got: %s", didl)
+	}
+	if !strings.Contains(didl, "/media/photo3") {
+		t.Errorf("expected a /media/photo3 res URL, got: %s", didl)
+	}
+}
+
+func TestBrowseTimelineMetadataReturnsSelfDescribingContainer(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "timeline", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="timeline"`) {
+		t.Errorf("expected self-describing timeline container, got: %s", didl)
+	}
+	if !strings.Contains(didl, "Timeline") {
+		t.Errorf("expected title 'Timeline', got: %s", didl)
 	}
 }
 
@@ -537,6 +567,7 @@ func TestBrowseUpstreamErrorsReturn502(t *testing.T) {
 		{"album direct children (GetAlbum)", "album:album1", "BrowseDirectChildren"},
 		{"person metadata (GetPerson)", "person:person1", "BrowseMetadata"},
 		{"person direct children (GetPersonAssets)", "person:person1", "BrowseDirectChildren"},
+		{"timeline direct children (ListTimelineAssets)", "timeline", "BrowseDirectChildren"},
 		{"asset (GetAsset)", "asset:photo1", "BrowseMetadata"},
 	}
 	for _, c := range cases {
