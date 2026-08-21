@@ -12,8 +12,8 @@
   <Overview>Exposes Immich albums and named people (photos only) as a DLNA MediaServer so Smart TVs can browse and display them without an extra app. Uses host networking because SSDP relies on UDP multicast, which does not traverse Docker's bridge network.</Overview>
   <Category>MediaApp:Photos Network:</Category>
   <WebUI/>
-  <TemplateURL/>
-  <Icon>https://immich.app/img/immich-logo.svg</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/icon.svg</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>
