@@ -28,9 +28,11 @@ go run .
 ```
 
 Requires Go 1.26.5+ (matches `go.mod` and CI). CI (`.github/workflows/ci.yml`)
-runs gofmt check, `go vet`, `go test -race`, cross-compiles for
-linux/darwin × amd64/arm64, and does a Dockerfile build check — reproduce
-these locally before pushing rather than relying on CI to catch them.
+lints and runs gofmt check / `go vet` / `go test -race` on every PR; the
+cross-compile (linux/darwin × amd64/arm64) and Dockerfile build check only
+run on pushes to `main` and during release verification, to keep PR runs
+fast — reproduce all of it locally before pushing rather than relying on
+CI to catch them.
 
 Pushing a `v*.*.*` tag triggers `.github/workflows/release.yml`, which
 re-runs CI, builds release archives, and publishes a multi-arch image to
