@@ -43,6 +43,23 @@ func TestAssetCapturedAt(t *testing.T) {
 	}
 }
 
+func TestAssetIsVideo(t *testing.T) {
+	cases := []struct {
+		assetType string
+		want      bool
+	}{
+		{"VIDEO", true},
+		{"IMAGE", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		a := Asset{Type: c.assetType}
+		if got := a.IsVideo(); got != c.want {
+			t.Errorf("Asset{Type: %q}.IsVideo() = %v, want %v", c.assetType, got, c.want)
+		}
+	}
+}
+
 func TestPersonIsNamed(t *testing.T) {
 	cases := []struct {
 		name string

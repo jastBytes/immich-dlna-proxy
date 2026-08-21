@@ -18,7 +18,7 @@ required is missing or malformed.
 | `CACHE_DIR` | no | `/config/cache` | Directory where cached photo bytes are stored. Set to match a persistent volume/mount when running in a container. |
 | `CACHE_MAX_MB` | no | `2048` | Soft size budget for `CACHE_DIR` in megabytes. Once exceeded, least-recently-viewed photos are deleted first until back under budget. |
 | `DISABLE_CACHE` | no | `false` | Set to `true` to disable disk caching entirely and always stream live from Immich (nothing written to disk). |
-| `MAX_RESOLUTION` | no | (unset) | Downscale photos larger than this, e.g. `1920x1080`. Preserves aspect ratio; only JPEG/PNG are supported (others pass through untouched). See [Downscaling](architecture.md#downscaling) for details. |
+| `MAX_RESOLUTION` | no | (unset) | Downscale photos larger than this, e.g. `1920x1080`. Preserves aspect ratio; only JPEG/PNG are supported (others pass through untouched). Doesn't apply to videos. See [Downscaling](architecture.md#downscaling) for details. |
 | `MEDIA_FETCH_CONCURRENCY` | no | `4` | Max number of `/media/*` requests allowed to be downloading from Immich at once. Extra requests queue for a free slot (up to 30s, then fail with `503`) instead of hitting Immich all at once - protects Immich when a TV rapidly scrolls through a large album. Must be a positive integer. |
 
 `CACHE_MAX_MB` and `MEDIA_FETCH_CONCURRENCY` must parse as integers (the
