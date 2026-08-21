@@ -1,0 +1,79 @@
+name: Bug report
+description: Something isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please note this project
+        only handles `type == "IMAGE"` Immich assets — videos are out of
+        scope for now, not a bug.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug, and what you expected instead.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Set `MAX_RESOLUTION=1920`
+        2. Browse to an album on the TV
+        3. ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: How are you running it?
+      options:
+        - Docker
+        - Unraid template
+        - go run / built binary
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Version / image tag
+      description: Release tag, `ghcr.io` image tag, or commit SHA
+      placeholder: v1.2.3
+    validations:
+      required: true
+
+  - type: input
+    id: client
+    attributes:
+      label: DLNA client / TV
+      description: The TV or DLNA client software this happens on (e.g. Samsung Q80T, Xbox, VLC, Home Assistant media browser)
+    validations:
+      required: false
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >
+        Env vars you've set (from `docs/configuration.md`), e.g. `MAX_RESOLUTION`,
+        `CACHE_MAX_MB`, `DISABLE_CACHE`. **Do not include `IMMICH_API_KEY` or other secrets.**
+      render: shell
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output from the proxy. Redact any secrets/URLs you don't want to share.
+      render: shell
+    validations:
+      required: false

@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Configuration & architecture docs
+    url: https://github.com/jastBytes/immich-dlna-proxy/tree/main/docs
+    about: Check docs/configuration.md (env vars, Docker/Unraid) and docs/architecture.md (protocol internals) before opening an issue.
