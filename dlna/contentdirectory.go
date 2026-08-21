@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Re
 	case env.Body.GetSearchCapabilities != nil:
 		writeSoapResponse(w, cdNS, "GetSearchCapabilitiesResponse", map[string]string{"SearchCaps": "dc:title,upnp:class"})
 	case env.Body.GetSortCapabilities != nil:
-		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": ""})
+		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": "dc:title"})
 	case env.Body.GetSystemUpdateID != nil:
 		writeSoapResponse(w, cdNS, "GetSystemUpdateIDResponse", map[string]string{"Id": "1"})
 	default:
@@ -148,6 +149,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
+		desc, sortOK := parseSortCriteria(args.SortCriteria)
+		sortByTitle(albums, func(a immich.Album) string { return a.AlbumName }, desc, sortOK)
 		total = len(albums)
 		paged := page(albums, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
@@ -180,6 +183,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				named = append(named, p)
 			}
 		}
+		desc, sortOK := parseSortCriteria(args.SortCriteria)
+		sortByTitle(named, func(p immich.Person) string { return p.Name }, desc, sortOK)
 		total = len(named)
 		paged := page(named, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
@@ -212,6 +217,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos)))
 			returned, total = 1, 1
 		} else {
+			desc, sortOK := parseSortCriteria(args.SortCriteria)
+			sortByTitle(photos, func(a immich.Asset) string { return a.OriginalFileName }, desc, sortOK)
 			total = len(photos)
 			paged := page(photos, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
@@ -243,6 +250,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				return
 			}
 			photos := filterPhotos(assets)
+			desc, sortOK := parseSortCriteria(args.SortCriteria)
+			sortByTitle(photos, func(a immich.Asset) string { return a.OriginalFileName }, desc, sortOK)
 			total = len(photos)
 			paged := page(photos, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
@@ -280,6 +289,45 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		"NumberReturned": strconv.Itoa(returned),
 		"TotalMatches":   strconv.Itoa(total),
 		"UpdateID":       "1",
+	})
+}
+
+// parseSortCriteria extracts an ascending/descending request for
+// "dc:title" out of a DLNA SortCriteria string (e.g. "+dc:title" or
+// "-dc:title,+upnp:originalTrackNumber" - comma-separated, each entry
+// prefixed with + or -). dc:title is the only sortable property this
+// server advertises via GetSortCapabilities, since it's the only text
+// value every container/item DIDL-Lite fragment carries; any other
+// property in the criteria is ignored rather than rejected, matching
+// this repo's pass-through-on-unsupported-input convention. ok is false
+// when no recognized property is present, meaning "leave Immich's own
+// order alone".
+func parseSortCriteria(criteria string) (descending, ok bool) {
+	for _, part := range strings.Split(criteria, ",") {
+		switch strings.TrimSpace(part) {
+		case "+dc:title":
+			return false, true
+		case "-dc:title":
+			return true, true
+		}
+	}
+	return false, false
+}
+
+// sortByTitle sorts items in place by a case-insensitive comparison of the
+// string title returns for each, applying it only when SortCriteria asked
+// for dc:title (ok==false leaves the slice - and thus Immich's own
+// ordering - untouched).
+func sortByTitle[T any](items []T, title func(T) string, descending, ok bool) {
+	if !ok {
+		return
+	}
+	slices.SortFunc(items, func(a, b T) int {
+		c := strings.Compare(strings.ToLower(title(a)), strings.ToLower(title(b)))
+		if descending {
+			return -c
+		}
+		return c
 	})
 }
 

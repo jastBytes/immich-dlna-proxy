@@ -126,6 +126,15 @@ limit" per spec. A client that paginates (anything with more items in a
 container than fit on one page) previously got the identical full list
 back on every page instead of successive slices of it.
 
+`GetSortCapabilities` advertises `dc:title` - the only sortable property,
+since it's the only text value every container/item carries. A `Browse`
+or `Search` request whose `SortCriteria` includes `+dc:title` or
+`-dc:title` (see `parseSortCriteria`/`sortByTitle` in
+`dlna/contentdirectory.go`) gets albums, people, or photos sorted
+case-insensitively by name/title before pagination is applied; any other
+property in `SortCriteria` is ignored, and an empty/unrecognized
+`SortCriteria` leaves Immich's own listing order untouched.
+
 A handful of other details turned out to matter for Samsung TVs
 specifically, verified by diffing wire traffic against a real minidlna
 instance on the same TV: the DIDL-Lite root element declares
