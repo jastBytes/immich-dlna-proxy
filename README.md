@@ -174,3 +174,4 @@ in `release.yml`).
   app are useful for poking at the server independently of a TV.
 - Album covers/thumbnails for the folder view itself aren't implemented
   (some DLNA clients show a folder icon; this is cosmetic).
+<!-- CI verification: confirms build/docker-build-check are skipped on pull_request events; safe to close after checking. -->
