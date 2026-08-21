@@ -25,6 +25,30 @@ func TestBuildContainerOmitsNegativeChildCount(t *testing.T) {
 	}
 }
 
+func TestBuildContainerRootIncludesSearchClass(t *testing.T) {
+	c := buildContainer("0", "-1", "Immich Photos", 2)
+	if !strings.Contains(c, `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>`) {
+		t.Errorf("expected root searchClass, got: %s", c)
+	}
+}
+
+func TestBuildContainerNonRootOmitsSearchClass(t *testing.T) {
+	c := buildContainer("albums", "0", "Albums", 3)
+	if strings.Contains(c, "searchClass") {
+		t.Errorf("expected non-root container to omit searchClass, got: %s", c)
+	}
+}
+
+func TestBuildContainerIncludesSearchableAndStorageUsed(t *testing.T) {
+	c := buildContainer("albums", "0", "Albums", 3)
+	if !strings.Contains(c, `searchable="1"`) {
+		t.Errorf("expected searchable attribute, got: %s", c)
+	}
+	if !strings.Contains(c, "<upnp:storageUsed>-1</upnp:storageUsed>") {
+		t.Errorf("expected storageUsed element, got: %s", c)
+	}
+}
+
 func TestBuildContainerEscapesTitle(t *testing.T) {
 	c := buildContainer("id", "0", `A & <B>`, 1)
 	if strings.Contains(c, `A & <B>`) {
@@ -71,13 +95,15 @@ func TestBuildPhotoItemEscapesTitleAndURL(t *testing.T) {
 
 func TestWrapDIDLIncludesNamespacesAndItems(t *testing.T) {
 	didl := wrapDIDL("<item/>")
-	if !strings.HasPrefix(didl, `<?xml version="1.0" encoding="UTF-8"?>`) {
-		t.Errorf("expected XML declaration prefix, got: %s", didl)
+	if !strings.HasPrefix(didl, `<DIDL-Lite`) {
+		t.Errorf("expected no nested XML declaration before DIDL-Lite, got: %s", didl)
 	}
 	for _, ns := range []string{
 		`xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"`,
 		`xmlns:dc="http://purl.org/dc/elements/1.1/"`,
 		`xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/"`,
+		`xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/"`,
+		`xmlns:sec="http://www.sec.co.kr/dlna"`,
 	} {
 		if !strings.Contains(didl, ns) {
 			t.Errorf("expected namespace %q, got: %s", ns, didl)

@@ -25,7 +25,7 @@ func NewServer(cfg *config.Config, client *immich.Client, c *cache.Cache) *Serve
 	return &Server{cfg: cfg, immich: client, cache: c}
 }
 
-func (s *Server) Mux() *http.ServeMux {
+func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/description.xml", s.handleDescription)
@@ -37,7 +37,37 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("/ctl/X_MS_MediaReceiverRegistrar", s.handleMediaReceiverRegistrarControl)
 	mux.HandleFunc("/media/", s.handleMedia)
 
-	return mux
+	return loggingMiddleware(upnpHeadersMiddleware(mux))
+}
+
+// upnpHeadersMiddleware sets the SERVER and EXT headers UPnP/DLNA clients
+// expect on every HTTP response, not just SSDP replies. Some DLNA client
+// stacks treat the SERVER header's DLNADOC/1.50 token as their compliance
+// check for whether to trust a device's responses at all, rather than (or
+// in addition to) the same token in the device description XML.
+//
+// EXT is set via the header map directly (not Header.Set, which
+// canonicalizes to "Ext") because a packet capture of a real Samsung TV
+// showed it only ever accepts all-caps "EXT:" from a working minidlna
+// instance - HTTP header names are case-insensitive per spec, but Samsung's
+// embedded client stack apparently isn't.
+func upnpHeadersMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Server", "Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0")
+		w.Header()["EXT"] = []string{""}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// loggingMiddleware logs every incoming HTTP request, primarily to make it
+// obvious whether a DLNA client got as far as fetching /description.xml or
+// calling ContentDirectory Browse at all - useful for diagnosing clients
+// that discover the server over SSDP but then go quiet.
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		log.Printf("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
