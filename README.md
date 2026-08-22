@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml)
 
-Exposes your Immich albums and named people (photos only, for now) as a
+Exposes your Immich albums and named people (photos and videos) as a
 DLNA MediaServer so older Smart TVs / DLNA clients can browse and display
 them without any extra app.
 
@@ -19,24 +19,31 @@ Written in Go, no external dependencies — just the standard library.
   (`GET /api/albums`, `GET /api/albums/{id}`, `GET /api/people`,
   `GET /api/people/{id}/assets`) and maps the root to two folders,
   "Albums" and "People", each album/person to a DLNA *container*
-  (folder), and each photo asset to a DLNA *item*.
+  (folder), and each photo/video asset to a DLNA *item*.
 - **X_MS_MediaReceiverRegistrar**: a Microsoft-defined UPnP extension some
   clients (Xbox, Windows Media Player, some Samsung firmwares) require to
   be present before they'll browse a server's content at all - the proxy
   advertises it and always answers "authorized".
-- **Media streaming (HTTP)**: `/media/{assetID}` serves photo bytes to the
-  TV. On a cache miss, it downloads the full original from Immich's
-  `/api/assets/{id}/original`, writes it to a disk cache, then serves it
-  from there (with proper `Range`/`ETag` support via `http.ServeContent`).
-  On a cache hit, it's served straight from disk - no Immich call at all.
+- **Media streaming (HTTP)**: `/media/{assetID}` serves photo/video bytes
+  to the TV. On a cache miss, it downloads the full original from
+  Immich's `/api/assets/{id}/original`, writes it to a disk cache, then
+  serves it from there (with proper `Range`/`ETag` support via
+  `http.ServeContent`). On a cache hit, it's served straight from disk -
+  no Immich call at all. Videos are streamed straight into the cache
+  file rather than buffered in memory first, since they can be much
+  larger than photos.
+- **Thumbnails (HTTP)**: `/thumbnail/{assetID}` proxies Immich's
+  generated preview thumbnail, uncached. Used as the `albumArtURI` for
+  video items, since a video file can't double as its own preview image
+  the way a photo can.
 
 ## Caching
 
-Original photo bytes are cached on disk under `CACHE_DIR` (default
-`/config/cache`) so repeated views of the same photo don't hit Immich
+Original photo/video bytes are cached on disk under `CACHE_DIR` (default
+`/config/cache`) so repeated views of the same asset don't hit Immich
 again. Album/asset/people *listings* (`Browse`) are **not** cached yet -
-only the
-image bytes behind `/media/{assetID}`.
+only the bytes behind `/media/{assetID}` (thumbnails, used for video
+items' `albumArtURI`, are never cached either).
 
 - Cache key is the asset ID; stored as `<assetID>` (bytes) +
   `<assetID>.type` (MIME type sidecar).
@@ -46,8 +53,8 @@ image bytes behind `/media/{assetID}`.
 - Set `DISABLE_CACHE=true` to fall back to the old behavior (always proxy
   live from Immich, nothing written to disk).
 
-Only assets with `type == "IMAGE"` are shown; videos are skipped entirely
-for this first version.
+Assets with `type == "IMAGE"` or `type == "VIDEO"` are shown; any other
+asset type is skipped.
 
 ## Configuration (environment variables)
 
@@ -148,11 +155,13 @@ in `release.yml`).
   2026. If album/asset listing returns errors, check your own server's
   live OpenAPI docs at `{IMMICH_URL}/api/doc` and adjust
   `immich/types.go` / `immich/client.go` accordingly.
-- No transcoding: photos are streamed/cached as their original file. Most
-  TVs handle JPEG fine; very large originals (e.g. 48MP RAW-derived JPEGs)
-  might be slow to load or unsupported by some TVs. A follow-up version
-  could cache Immich's `/thumbnail?size=preview` instead of the original
-  for faster loading.
+- No transcoding: photos and videos are streamed/cached as their original
+  file/codec. Most TVs handle JPEG and common video codecs (H.264/AAC in
+  MP4) fine; very large photo originals (e.g. 48MP RAW-derived JPEGs) or
+  video codecs/containers your TV doesn't support natively might be slow
+  to load or fail outright, with no server-side fallback. A follow-up
+  version could cache Immich's `/thumbnail?size=preview` for photos
+  instead of the original for faster loading.
 - Album/asset *listings* aren't cached, only the image bytes - a TV
   re-browsing a huge album will still hit the Immich API for the listing
   every time, just not re-download photos it already viewed.

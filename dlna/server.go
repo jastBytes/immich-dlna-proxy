@@ -36,6 +36,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/X_MS_MediaReceiverRegistrar.xml", s.handleMediaReceiverRegistrarSCPD)
 	mux.HandleFunc("/ctl/X_MS_MediaReceiverRegistrar", s.handleMediaReceiverRegistrarControl)
 	mux.HandleFunc("/media/", s.handleMedia)
+	mux.HandleFunc("/thumbnail/", s.handleThumbnail)
 
 	return loggingMiddleware(upnpHeadersMiddleware(mux))
 }
@@ -104,6 +105,12 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
+
+	if isVideoMimeType(mimeType) {
+		s.serveVideo(w, r, assetID, mimeType, body)
+		return
+	}
+
 	data, err := io.ReadAll(body)
 	_ = body.Close()
 	if err != nil {
@@ -145,6 +152,82 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", mimeType)
 	http.ServeContent(w, r, assetID, info.ModTime(), f)
+}
+
+// isVideoMimeType reports whether mimeType (as returned by Immich's
+// Content-Type header) identifies a video asset.
+func isVideoMimeType(mimeType string) bool {
+	return strings.HasPrefix(mimeType, "video/")
+}
+
+// serveVideo streams a video asset from Immich. Unlike photos, videos are
+// never buffered into memory or decoded - there's no orientation/resize
+// step for them, and they can be gigabytes in size, so buffering the
+// whole thing first (as the photo path does, to support decode-based
+// transforms) isn't practical. On a cache miss, it's written straight to
+// disk via cache.Put and then served from there, so Range requests (which
+// TVs rely on to seek during playback) work the same way a cache hit
+// does. With caching disabled, it's copied directly to the response
+// instead, which can't support Range - an accepted trade-off for that
+// already-opt-out, streaming-for-debugging mode.
+func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request, assetID, mimeType string, body io.ReadCloser) {
+	defer func() { _ = body.Close() }()
+
+	if s.cache == nil {
+		w.Header().Set("Content-Type", mimeType)
+		if _, err := io.Copy(w, body); err != nil {
+			log.Printf("stream video %s failed: %v", assetID, err)
+		}
+		return
+	}
+
+	path, err := s.cache.Put(assetID, mimeType, body)
+	if err != nil {
+		log.Printf("cache: put(%s) failed: %v", assetID, err)
+		http.Error(w, "cache error", http.StatusInternalServerError)
+		return
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		log.Printf("cache: open(%s) failed: %v", path, err)
+		http.Error(w, "cache error", http.StatusInternalServerError)
+		return
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil {
+		http.Error(w, "cache error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", mimeType)
+	http.ServeContent(w, r, assetID, info.ModTime(), f)
+}
+
+// handleThumbnail proxies Immich's generated preview-sized thumbnail for
+// an asset. It's used for video items' albumArtURI (see buildItem) - a
+// video's own bytes can't double as an image preview the way a photo's
+// can. Thumbnails are small and cheap for Immich to regenerate, so unlike
+// /media, this isn't cached.
+func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	assetID := strings.TrimPrefix(r.URL.Path, "/thumbnail/")
+	if assetID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	body, mimeType, err := s.immich.GetAssetThumbnail(assetID)
+	if err != nil {
+		log.Printf("GetAssetThumbnail(%s) failed: %v", assetID, err)
+		http.Error(w, "upstream error", http.StatusBadGateway)
+		return
+	}
+	defer func() { _ = body.Close() }()
+
+	w.Header().Set("Content-Type", mimeType)
+	if _, err := io.Copy(w, body); err != nil {
+		log.Printf("stream thumbnail(%s) failed: %v", assetID, err)
+	}
 }
 
 // fixOrientation normalizes EXIF orientation (see imageproc.FixOrientation)

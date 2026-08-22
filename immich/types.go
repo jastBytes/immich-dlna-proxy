@@ -23,8 +23,7 @@ type Asset struct {
 	FileCreatedAt string `json:"fileCreatedAt"`
 }
 
-// IsPhoto reports whether the asset should be exposed to DLNA clients.
-// We only support photos for now.
+// IsPhoto reports whether the asset is a photo.
 func (a Asset) IsPhoto() bool {
 	return a.Type == "IMAGE"
 }
@@ -40,6 +39,11 @@ func (a Asset) CapturedAt() time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// IsVideo reports whether the asset is a video.
+func (a Asset) IsVideo() bool {
+	return a.Type == "VIDEO"
 }
 
 // Person is one entry from GET /api/people (a named face cluster).

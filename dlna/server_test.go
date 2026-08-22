@@ -233,6 +233,204 @@ func TestMediaHandlerNoCacheUpstreamErrorReturnsBadGateway(t *testing.T) {
 	}
 }
 
+func TestMediaHandlerServesVideoAndCachesIt(t *testing.T) {
+	var immichHits int
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/assets/clip1/original" {
+			immichHits++
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("fake-video-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeImmich.Close()
+
+	dir := t.TempDir()
+	c, err := cache.New(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, c)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(ts.URL + "/media/clip1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if string(body) != "fake-video-bytes" {
+			t.Fatalf("request %d: unexpected body %q", i, body)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "video/mp4" {
+			t.Fatalf("request %d: unexpected content-type %q", i, ct)
+		}
+	}
+
+	if immichHits != 1 {
+		t.Fatalf("expected exactly 1 upstream hit (2nd request should be served from cache), got %d", immichHits)
+	}
+}
+
+func TestMediaHandlerVideoSupportsRangeRequestsFromCache(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/assets/clip1/original" {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("0123456789"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeImmich.Close()
+
+	dir := t.TempDir()
+	c, err := cache.New(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, c)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Prime the cache.
+	resp, err := http.Get(ts.URL + "/media/clip1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/media/clip1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Range", "bytes=2-4")
+	resp2, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp2.Body.Close() }()
+	if resp2.StatusCode != http.StatusPartialContent {
+		t.Fatalf("status = %d, want 206", resp2.StatusCode)
+	}
+	body, _ := io.ReadAll(resp2.Body)
+	if string(body) != "234" {
+		t.Fatalf("range body = %q, want %q", body, "234")
+	}
+}
+
+func TestMediaHandlerVideoNoCacheStreamsDirectly(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/assets/clip1/original" {
+			w.Header().Set("Content-Type", "video/mp4")
+			_, _ = w.Write([]byte("fake-video-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil) // no cache
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/media/clip1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != "fake-video-bytes" {
+		t.Fatalf("unexpected body %q", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "video/mp4" {
+		t.Fatalf("unexpected content-type %q", ct)
+	}
+}
+
+func TestThumbnailHandlerProxiesImmich(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/assets/clip1/thumbnail" {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("fake-thumb-bytes"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/thumbnail/clip1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(body) != "fake-thumb-bytes" {
+		t.Fatalf("unexpected body %q", body)
+	}
+	if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+		t.Fatalf("unexpected content-type %q", ct)
+	}
+}
+
+func TestThumbnailHandlerEmptyAssetIDReturns404(t *testing.T) {
+	cfg := &config.Config{ImmichURL: "http://immich.local", APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/thumbnail/", nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestThumbnailHandlerUpstreamErrorReturnsBadGateway(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/thumbnail/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+}
+
 func TestMediaHandlerEmptyAssetIDReturns404(t *testing.T) {
 	cfg := &config.Config{ImmichURL: "http://immich.local", APIKey: "test-key"}
 	client := immich.New(cfg.ImmichURL, cfg.APIKey)

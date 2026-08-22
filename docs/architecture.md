@@ -6,8 +6,8 @@ the UPnP/DLNA MediaServer protocol and translating it into calls against
 the Immich REST API. It's a single Go binary with no external
 dependencies.
 
-Only photos (`type == "IMAGE"`) are exposed. Videos are skipped entirely
-in this version.
+Photos and videos (`type == "IMAGE"` or `type == "VIDEO"`) are exposed;
+any other asset type Immich might report (e.g. audio) is skipped.
 
 ## The three protocol layers
 
@@ -84,10 +84,10 @@ Immich concepts like this:
 |---|---|---|
 | `0` | Root | Two containers: `albums` and `people` |
 | `albums` | "Albums" folder | One `container` per album (`GET /api/albums`) |
-| `album:<id>` | One album | One `item` per **photo** asset in that album (`GET /api/albums/{id}`, filtered to `type == "IMAGE"`) |
+| `album:<id>` | One album | One `item` per **photo/video** asset in that album (`GET /api/albums/{id}`, filtered to `type == "IMAGE"` or `"VIDEO"`) |
 | `people` | "People" folder | One `container` per **named** person (`GET /api/people`, filtered to entries with a non-empty `name` - unconfirmed/unnamed face clusters are skipped) |
-| `person:<id>` | One person | One `item` per photo they appear in (`GET /api/people/{id}/assets`, filtered to `type == "IMAGE"`) |
-| `asset:<id>` | One photo | N/A (items have no children); `BrowseMetadata` returns the item itself |
+| `person:<id>` | One person | One `item` per photo/video they appear in (`GET /api/people/{id}/assets`, filtered to `type == "IMAGE"` or `"VIDEO"`) |
+| `asset:<id>` | One photo/video | N/A (items have no children); `BrowseMetadata` returns the item itself |
 
 Each `Browse` call hits the Immich API fresh - album/asset/people
 **listings** are not cached (only the underlying image bytes are, see
@@ -157,16 +157,29 @@ canonicalizes the name to `Ext` and always inserts `": "`).
 
 Each `item` element includes a `<res>` tag pointing at
 `http://<host>/media/<assetID>` - that's the URL that ends up loaded by
-the TV to actually display the photo. It also includes an
-`<upnp:albumArtURI>` tag pointing at the same URL: without it, media
-browsers like Home Assistant's list titles but show a placeholder icon
-instead of a thumbnail (they don't fall back to `<res>` for previews).
+the TV to actually display the photo or play the video. It also includes
+an `<upnp:albumArtURI>` tag: without it, media browsers like Home
+Assistant's list titles but show a placeholder icon instead of a
+thumbnail (they don't fall back to `<res>` for previews). `buildAssetItem`
+(`dlna/contentdirectory.go`) picks the `<upnp:class>`
+(`object.item.imageItem.photo` vs `object.item.videoItem.movie`) and the
+albumArtURI target based on `Asset.IsVideo()`:
+
+- **Photos** use their own `/media/<assetID>` URL as the albumArtURI too
+  - the photo is its own thumbnail.
+- **Videos** use `http://<host>/thumbnail/<assetID>` instead, since a
+  video file can't be decoded as a preview image the way a photo can.
+  That endpoint (`dlna/server.go`'s `handleThumbnail`) proxies Immich's
+  `GET /api/assets/{id}/thumbnail?size=preview` directly, uncached -
+  thumbnails are small and cheap enough for Immich to regenerate that
+  caching isn't worth the added complexity.
 
 ## Media streaming
 
 `GET /media/{assetID}` is a plain (non-SOAP) HTTP endpoint that serves
-the actual photo bytes. It's handled in `dlna/server.go` and behaves
-differently depending on whether the disk cache is enabled (the default):
+the actual photo/video bytes. It's handled in `dlna/server.go` and
+behaves differently depending on whether the disk cache is enabled (the
+default), and whether the asset is a photo or a video.
 
 ```
                  ┌─────────────┐   Browse (SOAP)    ┌──────────────────┐
@@ -189,10 +202,11 @@ differently depending on whether the disk cache is enabled (the default):
                                                 └──────────────────┘
 ```
 
-- **Cache hit:** the file is opened from `CACHE_DIR` and served via
-  Go's `http.ServeContent`, which handles `Range` requests, `ETag`, and
-  `Last-Modified` automatically. No Immich call happens at all.
-- **Cache miss:** the proxy downloads the *complete* original from
+- **Cache hit** (photo or video): the file is opened from `CACHE_DIR` and
+  served via Go's `http.ServeContent`, which handles `Range` requests,
+  `ETag`, and `Last-Modified` automatically. No Immich call happens at
+  all.
+- **Cache miss, photo:** the proxy downloads the *complete* original from
   Immich (ignoring any `Range` header on the inbound request - it always
   wants the whole file), normalizes its EXIF orientation and downscales
   it as configured (see [Orientation](#orientation) and
@@ -200,9 +214,26 @@ differently depending on whether the disk cache is enabled (the default):
   from the newly written file the same way as a cache hit. This means
   the very first view of a photo waits for the full download before any
   bytes reach the TV; subsequent views are effectively instant.
-- **Cache disabled** (`DISABLE_CACHE=true`): same download, orientation
-  fix, and optional downscale as a cache miss above, but the result is
-  served straight from memory instead of being written to disk.
+- **Cache miss, video:** `isVideoMimeType` (checked against the
+  `Content-Type` Immich's download response carries) routes the request
+  to `serveVideo` instead of the photo path above. Videos are never
+  buffered into memory or decoded - there's no orientation/resize step
+  for them, and a video can be gigabytes in size, so buffering the whole
+  thing first (the way the photo path does, to support decode-based
+  transforms) isn't practical. Immich's response body is streamed
+  straight into `cache.Put` (which itself just `io.Copy`s to a temp file
+  before the atomic rename), then served from the newly written file -
+  so `Range` still works for seeking, the same as a cache hit.
+- **Cache disabled** (`DISABLE_CACHE=true`), photo: same download,
+  orientation fix, and optional downscale as a photo cache miss above,
+  but the result is served straight from memory instead of being written
+  to disk.
+- **Cache disabled, video:** Immich's response body is copied directly to
+  the client instead of through `cache.Put`. This can't support `Range`
+  requests (there's nothing seekable to serve them from) - an accepted
+  trade-off, since `DISABLE_CACHE` is already an opt-out mode mainly
+  meant for testing/debugging (see
+  [Configuration](configuration.md#tuning-the-cache)).
 
 ## Orientation
 
@@ -272,11 +303,17 @@ cached/served. See [`imageproc/resize.go`](../imageproc/resize.go).
 
 ## What isn't implemented
 
-- **Videos.** Only `type == "IMAGE"` assets are ever listed or served.
+- **Video transcoding.** Videos are streamed as their original file/codec
+  - never transcoded, remuxed, or transrated. A TV that can't decode the
+  source codec/container natively simply won't be able to play it; there's
+  no server-side fallback.
+- **Non-photo/video asset types.** Only `type == "IMAGE"` and
+  `type == "VIDEO"` assets are ever listed or served; anything else
+  Immich might report is skipped.
 - **Unnamed people.** Immich creates a Person for every detected face
   cluster, including ones you haven't confirmed/named yet. Only named
   people show up as folders - there's no "unknown faces" browsing.
-- **Transcoding/format conversion.** JPEG/PNG can be downscaled (see
+- **Image format conversion.** JPEG/PNG can be downscaled (see
   `MAX_RESOLUTION` below) but never converted to a different format.
 - **Listing cache.** Album/asset/people browsing always hits the Immich
   API live (only the image bytes are cached).

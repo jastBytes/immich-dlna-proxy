@@ -133,8 +133,11 @@ func newTestServerWithFakeImmich(t *testing.T) (srvURL string) {
 			body, _ := io.ReadAll(r.Body)
 			switch {
 			case strings.Contains(string(body), `"albumIds"`):
-				_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
-					"items":[{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
+				_, _ = w.Write([]byte(`{"assets":{"total":2,"count":2,"nextPage":null,
+					"items":[
+						{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE"},
+						{"id":"clip1","originalFileName":"clip.mp4","originalMimeType":"video/mp4","type":"VIDEO"}
+					]}}`))
 			case strings.Contains(string(body), `"personIds"`):
 				_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
 					"items":[{"id":"photo2","originalFileName":"alice.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
@@ -303,6 +306,27 @@ func TestBrowseAlbumMetadataReturnsPhotoCount(t *testing.T) {
 	didl := didlResult(t, browse(t, ts, "album:album1", "BrowseMetadata"))
 	if !strings.Contains(didl, `id="album:album1"`) || !strings.Contains(didl, "Vacation") {
 		t.Errorf("expected album1 metadata, got: %s", didl)
+	}
+}
+
+func TestBrowseAlbumListsVideoAlongsidePhoto(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "album:album1", "BrowseDirectChildren"))
+	if !strings.Contains(didl, `id="asset:photo1"`) {
+		t.Errorf("expected photo1 item, got: %s", didl)
+	}
+	if !strings.Contains(didl, `id="asset:clip1"`) {
+		t.Errorf("expected clip1 video item, got: %s", didl)
+	}
+	if !strings.Contains(didl, "<upnp:class>object.item.videoItem.movie</upnp:class>") {
+		t.Errorf("expected video item to use the videoItem.movie class, got: %s", didl)
+	}
+	if !strings.Contains(didl, "/media/clip1") {
+		t.Errorf("expected clip1's <res> to point at /media/clip1, got: %s", didl)
+	}
+	if !strings.Contains(didl, "<upnp:albumArtURI>http://") || !strings.Contains(didl, "/thumbnail/clip1</upnp:albumArtURI>") {
+		t.Errorf("expected clip1's albumArtURI to point at /thumbnail/clip1, got: %s", didl)
 	}
 }
 

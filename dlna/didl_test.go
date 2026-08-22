@@ -28,7 +28,10 @@ func TestBuildContainerOmitsNegativeChildCount(t *testing.T) {
 func TestBuildContainerRootIncludesSearchClass(t *testing.T) {
 	c := buildContainer("0", "-1", "Immich Photos", 2)
 	if !strings.Contains(c, `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>`) {
-		t.Errorf("expected root searchClass, got: %s", c)
+		t.Errorf("expected root image searchClass, got: %s", c)
+	}
+	if !strings.Contains(c, `<upnp:searchClass includeDerived="1">object.item.videoItem</upnp:searchClass>`) {
+		t.Errorf("expected root video searchClass, got: %s", c)
 	}
 }
 
@@ -59,29 +62,29 @@ func TestBuildContainerEscapesTitle(t *testing.T) {
 	}
 }
 
-func TestBuildPhotoItemDefaultsMimeType(t *testing.T) {
-	item := buildPhotoItem("asset:a1", "albums", "photo.jpg", "", "http://host/media/a1")
+func TestBuildItemDefaultsMimeType(t *testing.T) {
+	item := buildItem("asset:a1", "albums", "photo.jpg", "", "http://host/media/a1", "http://host/media/a1", false)
 	if !strings.Contains(item, `protocolInfo="http-get:*:image/jpeg:*"`) {
 		t.Errorf("expected default mime type image/jpeg, got: %s", item)
 	}
 }
 
-func TestBuildPhotoItemUsesGivenMimeType(t *testing.T) {
-	item := buildPhotoItem("asset:a1", "albums", "photo.png", "image/png", "http://host/media/a1")
+func TestBuildItemUsesGivenMimeType(t *testing.T) {
+	item := buildItem("asset:a1", "albums", "photo.png", "image/png", "http://host/media/a1", "http://host/media/a1", false)
 	if !strings.Contains(item, `protocolInfo="http-get:*:image/png:*"`) {
 		t.Errorf("expected mime type image/png, got: %s", item)
 	}
 }
 
-func TestBuildPhotoItemIncludesAlbumArtURI(t *testing.T) {
-	item := buildPhotoItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1")
+func TestBuildItemIncludesAlbumArtURI(t *testing.T) {
+	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false)
 	if !strings.Contains(item, "<upnp:albumArtURI>http://host/media/a1</upnp:albumArtURI>") {
 		t.Errorf("expected albumArtURI matching res URL, got: %s", item)
 	}
 }
 
-func TestBuildPhotoItemEscapesTitleAndURL(t *testing.T) {
-	item := buildPhotoItem("asset:a1", "albums", `weird & <title>.jpg`, "image/jpeg", "http://host/media/a1?x=1&y=2")
+func TestBuildItemEscapesTitleAndURL(t *testing.T) {
+	item := buildItem("asset:a1", "albums", `weird & <title>.jpg`, "image/jpeg", "http://host/media/a1?x=1&y=2", "http://host/media/a1?x=1&y=2", false)
 	if strings.Contains(item, `weird & <title>.jpg`) {
 		t.Errorf("title was not escaped: %s", item)
 	}
@@ -90,6 +93,29 @@ func TestBuildPhotoItemEscapesTitleAndURL(t *testing.T) {
 	}
 	if !strings.Contains(item, "media/a1?x=1&amp;y=2</res>") {
 		t.Errorf("expected escaped URL, got: %s", item)
+	}
+}
+
+func TestBuildItemUsesVideoClassAndDefaultMimeType(t *testing.T) {
+	item := buildItem("asset:v1", "albums", "clip.mp4", "", "http://host/media/v1", "http://host/thumbnail/v1", true)
+	if !strings.Contains(item, "<upnp:class>object.item.videoItem.movie</upnp:class>") {
+		t.Errorf("expected videoItem.movie class, got: %s", item)
+	}
+	if !strings.Contains(item, `protocolInfo="http-get:*:video/mp4:*"`) {
+		t.Errorf("expected default mime type video/mp4, got: %s", item)
+	}
+	if !strings.Contains(item, "<upnp:albumArtURI>http://host/thumbnail/v1</upnp:albumArtURI>") {
+		t.Errorf("expected albumArtURI pointing at the thumbnail endpoint, got: %s", item)
+	}
+	if !strings.Contains(item, `<res protocolInfo="http-get:*:video/mp4:*">http://host/media/v1</res>`) {
+		t.Errorf("expected res URL pointing at /media, got: %s", item)
+	}
+}
+
+func TestBuildItemPhotoUsesPhotoClass(t *testing.T) {
+	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false)
+	if !strings.Contains(item, "<upnp:class>object.item.imageItem.photo</upnp:class>") {
+		t.Errorf("expected imageItem.photo class, got: %s", item)
 	}
 }
 
