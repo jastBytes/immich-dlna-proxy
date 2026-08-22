@@ -217,6 +217,41 @@ func TestSearchMetadataAssetsStopsOnUnparseableNextPage(t *testing.T) {
 	}
 }
 
+func TestGetMyUser(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/users/me" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		if r.Header.Get("x-api-key") != "test-key" {
+			t.Errorf("x-api-key header = %q", r.Header.Get("x-api-key"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"u1","email":"alice@example.com","name":"Alice"}`))
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	user, err := client.GetMyUser()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.ID != "u1" || user.Name != "Alice" || user.Email != "alice@example.com" {
+		t.Fatalf("unexpected user: %+v", user)
+	}
+}
+
+func TestGetMyUserErrorStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	if _, err := client.GetMyUser(); err == nil {
+		t.Fatal("expected error for non-200 status")
+	}
+}
+
 func TestGetAsset(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/assets/a1" {

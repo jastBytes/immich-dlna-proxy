@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,14 +16,24 @@ import (
 	"github.com/jastBytes/immich-dlna-proxy/immich"
 )
 
-type Server struct {
-	cfg    *config.Config
-	immich *immich.Client
-	cache  *cache.Cache // nil if caching is disabled
+// UserClient pairs an Immich client with the display name of the Immich
+// account it authenticates as. Name is only ever shown to DLNA clients
+// when len(users) > 1 (see browseMultiUser in contentdirectory.go) - a
+// single configured user browses exactly as before, with no per-user
+// folder level, so Name is unused in that case.
+type UserClient struct {
+	Name   string
+	Client *immich.Client
 }
 
-func NewServer(cfg *config.Config, client *immich.Client, c *cache.Cache) *Server {
-	return &Server{cfg: cfg, immich: client, cache: c}
+type Server struct {
+	cfg   *config.Config
+	users []UserClient
+	cache *cache.Cache // nil if caching is disabled
+}
+
+func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
+	return &Server{cfg: cfg, users: users, cache: c}
 }
 
 func (s *Server) Mux() http.Handler {
@@ -72,12 +83,53 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
-	assetID := strings.TrimPrefix(r.URL.Path, "/media/")
+// parseMediaPath parses the path segment after "/media/". With a single
+// configured user it's a bare assetID, preserving the original
+// /media/{assetID} URL shape. With multiple IMMICH_API_KEYS configured, the
+// DIDL-Lite <res> URLs built in contentdirectory.go instead encode which
+// configured account's API key must be used to download the asset, as
+// "{userIdx}/{assetID}" - the account isn't otherwise derivable from the
+// asset ID alone, since each account only has permission to download
+// assets it can see. Asset IDs are UUIDs and never contain "/", so the two
+// shapes never collide.
+func parseMediaPath(path string, numUsers int) (userIdx int, assetID string, ok bool) {
+	if path == "" {
+		return 0, "", false
+	}
+	i := strings.IndexByte(path, '/')
+	if i < 0 {
+		return 0, path, true
+	}
+	idx, err := strconv.Atoi(path[:i])
+	if err != nil || idx < 0 || idx >= numUsers {
+		return 0, "", false
+	}
+	assetID = path[i+1:]
 	if assetID == "" {
+		return 0, "", false
+	}
+	return idx, assetID, true
+}
+
+// mediaURL builds the absolute URL a DLNA client GETs to fetch a photo's
+// bytes (see parseMediaPath for how handleMedia decodes it). userIdx is -1
+// for the single-user case, rendering the original /media/{assetID} shape
+// unchanged; otherwise it identifies which configured account owns the
+// asset.
+func mediaURL(baseURL string, userIdx int, assetID string) string {
+	if userIdx < 0 {
+		return baseURL + "/media/" + assetID
+	}
+	return baseURL + "/media/" + strconv.Itoa(userIdx) + "/" + assetID
+}
+
+func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
+	userIdx, assetID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/media/"), len(s.users))
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	client := s.users[userIdx].Client
 
 	if s.cache != nil {
 		if path, mimeType, modTime, ok := s.cache.Get(assetID); ok {
@@ -100,7 +152,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// most DLNA renderers ignore the orientation tag and show raw pixels,
 	// so a portrait photo tagged "rotate 90" needs the rotation baked into
 	// the pixels themselves to display upright.
-	body, mimeType, err := s.immich.DownloadOriginal(assetID)
+	body, mimeType, err := client.DownloadOriginal(assetID)
 	if err != nil {
 		log.Printf("DownloadOriginal(%s) failed: %v", assetID, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)

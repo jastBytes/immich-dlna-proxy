@@ -35,9 +35,9 @@ func TestMediaHandlerCachesAfterFirstRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, c)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, c)
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -62,6 +62,66 @@ func TestMediaHandlerCachesAfterFirstRequest(t *testing.T) {
 	}
 }
 
+func TestMediaHandlerMultiUserRoutesToCorrectAccount(t *testing.T) {
+	fake0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/assets/pic/original" {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("from-account-0"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fake0.Close()
+	fake1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/assets/pic/original" {
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("from-account-1"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fake1.Close()
+
+	cfg := &config.Config{ImmichURL: fake0.URL, APIKeys: []string{"key0", "key1"}}
+	users := []UserClient{
+		{Name: "Alice", Client: immich.New(fake0.URL, "key0")},
+		{Name: "Bob", Client: immich.New(fake1.URL, "key1")},
+	}
+	srv := NewServer(cfg, users, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp0, err := http.Get(ts.URL + "/media/0/pic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body0, _ := io.ReadAll(resp0.Body)
+	_ = resp0.Body.Close()
+	if string(body0) != "from-account-0" {
+		t.Errorf("/media/0/pic body = %q, want from-account-0", body0)
+	}
+
+	resp1, err := http.Get(ts.URL + "/media/1/pic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body1, _ := io.ReadAll(resp1.Body)
+	_ = resp1.Body.Close()
+	if string(body1) != "from-account-1" {
+		t.Errorf("/media/1/pic body = %q, want from-account-1", body1)
+	}
+
+	respBad, err := http.Get(ts.URL + "/media/5/pic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = respBad.Body.Close()
+	if respBad.StatusCode != http.StatusNotFound {
+		t.Errorf("/media/5/pic status = %d, want 404", respBad.StatusCode)
+	}
+}
+
 func TestMediaHandlerDownscalesOversizedImage(t *testing.T) {
 	oversized := makeTestJPEG(t, 4000, 2000)
 
@@ -83,12 +143,12 @@ func TestMediaHandlerDownscalesOversizedImage(t *testing.T) {
 
 	cfg := &config.Config{
 		ImmichURL: fakeImmich.URL,
-		APIKey:    "test-key",
+		APIKeys:   []string{"test-key"},
 		MaxWidth:  1920,
 		MaxHeight: 1080,
 	}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, c)
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, c)
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -140,9 +200,9 @@ func TestMediaHandlerFixesOrientationEvenWithoutCacheOrResize(t *testing.T) {
 	}))
 	defer fakeImmich.Close()
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil) // no cache
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil) // no cache
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -178,12 +238,12 @@ func TestMediaHandlerNoCacheStillResizes(t *testing.T) {
 
 	cfg := &config.Config{
 		ImmichURL: fakeImmich.URL,
-		APIKey:    "test-key",
+		APIKeys:   []string{"test-key"},
 		MaxWidth:  1920,
 		MaxHeight: 1080,
 	}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil) // no cache configured, resize enabled
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil) // no cache configured, resize enabled
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -216,9 +276,9 @@ func TestMediaHandlerNoCacheUpstreamErrorReturnsBadGateway(t *testing.T) {
 	}))
 	defer fakeImmich.Close()
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
@@ -234,9 +294,9 @@ func TestMediaHandlerNoCacheUpstreamErrorReturnsBadGateway(t *testing.T) {
 }
 
 func TestMediaHandlerEmptyAssetIDReturns404(t *testing.T) {
-	cfg := &config.Config{ImmichURL: "http://immich.local", APIKey: "test-key"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil)
+	cfg := &config.Config{ImmichURL: "http://immich.local", APIKeys: []string{"test-key"}}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/media/", nil)
 	rec := httptest.NewRecorder()
@@ -259,9 +319,9 @@ func TestMediaHandlerCacheMissDownloadErrorReturnsBadGateway(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, c)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, c)
 
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()

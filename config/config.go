@@ -11,8 +11,13 @@ import (
 type Config struct {
 	// ImmichURL is the base URL of the Immich server, e.g. http://192.168.1.10:2283
 	ImmichURL string
-	// APIKey is an Immich API key with at least album.read / asset.read permissions.
-	APIKey string
+	// APIKeys is one or more Immich API keys, each with at least
+	// album.read / asset.read permissions. A single key (the common case)
+	// browses as today - no extra folder level. When more than one key is
+	// configured (IMMICH_API_KEYS), each key gets its own top-level folder
+	// named after the Immich account it belongs to, so multiple users of
+	// the same Immich server can each browse their own albums/people.
+	APIKeys []string
 	// ListenAddr is host:port the HTTP part of the DLNA server binds to, e.g. :8200
 	ListenAddr string
 	// FriendlyName is shown on TVs / DLNA clients when browsing available servers.
@@ -42,7 +47,7 @@ type Config struct {
 func Load() (*Config, error) {
 	cfg := &Config{
 		ImmichURL:    os.Getenv("IMMICH_URL"),
-		APIKey:       os.Getenv("IMMICH_API_KEY"),
+		APIKeys:      parseAPIKeys(os.Getenv("IMMICH_API_KEYS"), os.Getenv("IMMICH_API_KEY")),
 		ListenAddr:   getEnvDefault("LISTEN_ADDR", ":8200"),
 		FriendlyName: getEnvDefault("FRIENDLY_NAME", "Immich Photos"),
 		UUID:         getEnvDefault("DEVICE_UUID", "3e7f0f4e-8c2e-4f7a-9c2a-immichdlna01"),
@@ -53,8 +58,8 @@ func Load() (*Config, error) {
 	if cfg.ImmichURL == "" {
 		return nil, fmt.Errorf("IMMICH_URL is not set")
 	}
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("IMMICH_API_KEY is not set")
+	if len(cfg.APIKeys) == 0 {
+		return nil, fmt.Errorf("IMMICH_API_KEY (or IMMICH_API_KEYS) is not set")
 	}
 
 	if os.Getenv("DISABLE_CACHE") == "true" {
@@ -75,6 +80,27 @@ func Load() (*Config, error) {
 	cfg.MaxWidth, cfg.MaxHeight = maxW, maxH
 
 	return cfg, nil
+}
+
+// parseAPIKeys builds the configured API key list. IMMICH_API_KEYS (a
+// comma-separated list, for multiple Immich accounts sharing this proxy)
+// takes precedence when it contains at least one non-empty entry;
+// otherwise it falls back to the single IMMICH_API_KEY. An empty result
+// means neither is set, which Load() rejects.
+func parseAPIKeys(multi, single string) []string {
+	var keys []string
+	for _, k := range strings.Split(multi, ",") {
+		if k = strings.TrimSpace(k); k != "" {
+			keys = append(keys, k)
+		}
+	}
+	if len(keys) > 0 {
+		return keys
+	}
+	if single != "" {
+		return []string{single}
+	}
+	return nil
 }
 
 // parseMaxResolution parses a "WIDTHxHEIGHT" string (e.g. "1920x1080").

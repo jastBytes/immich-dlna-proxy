@@ -57,7 +57,8 @@ for this first version.
 | Variable         | Required | Default          | Description                                   |
 |-------------------|:--------:|------------------|------------------------------------------------|
 | `IMMICH_URL`       | yes      | –                | Base URL of your Immich server, e.g. `http://192.168.1.10:2283` |
-| `IMMICH_API_KEY`   | yes      | –                | Immich API key (needs album.read / asset.read / asset.download / person.read) |
+| `IMMICH_API_KEY`   | yes*     | –                | Immich API key (needs album.read / asset.read / asset.download / person.read). *Not required if `IMMICH_API_KEYS` is set. |
+| `IMMICH_API_KEYS`  | no       | –                | Comma-separated API keys, for exposing more than one Immich user's library (e.g. one household sharing a server) - each gets its own top-level folder named after its account. See [Configuration](docs/configuration.md#multiple-immich-accounts). |
 | `LISTEN_ADDR`      | no       | `:8200`          | HTTP bind address/port                         |
 | `FRIENDLY_NAME`    | no       | `Immich Photos`  | Name shown on TVs when browsing servers        |
 | `DEVICE_UUID`      | no       | fixed default    | Set your own stable UUID if running >1 instance |

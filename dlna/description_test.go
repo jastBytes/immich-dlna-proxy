@@ -14,12 +14,12 @@ import (
 func TestHandleDescription(t *testing.T) {
 	cfg := &config.Config{
 		ImmichURL:    "http://immich.local",
-		APIKey:       "test-key",
+		APIKeys:      []string{"test-key"},
 		FriendlyName: `My "Photos" & <Stuff>`,
 		UUID:         "test-uuid-1234",
 	}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil)
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/description.xml", nil)
 	rec := httptest.NewRecorder()

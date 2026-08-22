@@ -12,9 +12,9 @@ import (
 
 func newTestServer(t *testing.T) *Server {
 	t.Helper()
-	cfg := &config.Config{ImmichURL: "http://immich.local", APIKey: "test-key", FriendlyName: "Test Server"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	return NewServer(cfg, client, nil)
+	cfg := &config.Config{ImmichURL: "http://immich.local", APIKeys: []string{"test-key"}, FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	return NewServer(cfg, []UserClient{{Client: client}}, nil)
 }
 
 // soapPost posts a SOAP body to path on srv's mux and returns the raw

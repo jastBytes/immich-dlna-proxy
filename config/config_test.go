@@ -7,7 +7,7 @@ import "testing"
 func clearConfigEnv(t *testing.T) {
 	t.Helper()
 	for _, k := range []string{
-		"IMMICH_URL", "IMMICH_API_KEY", "LISTEN_ADDR", "FRIENDLY_NAME",
+		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
 		"CACHE_MAX_MB", "MAX_RESOLUTION",
 	} {
@@ -35,6 +35,56 @@ func TestLoadMissingAPIKey(t *testing.T) {
 	}
 }
 
+func TestLoadMultipleAPIKeys(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("IMMICH_URL", "http://immich.local")
+	t.Setenv("IMMICH_API_KEYS", "key1, key2 ,key3")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"key1", "key2", "key3"}
+	if len(cfg.APIKeys) != len(want) {
+		t.Fatalf("APIKeys = %v, want %v", cfg.APIKeys, want)
+	}
+	for i, k := range want {
+		if cfg.APIKeys[i] != k {
+			t.Errorf("APIKeys[%d] = %q, want %q", i, cfg.APIKeys[i], k)
+		}
+	}
+}
+
+func TestLoadAPIKeysTakesPrecedenceOverSingle(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("IMMICH_URL", "http://immich.local")
+	t.Setenv("IMMICH_API_KEY", "single")
+	t.Setenv("IMMICH_API_KEYS", "key1,key2")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.APIKeys) != 2 || cfg.APIKeys[0] != "key1" || cfg.APIKeys[1] != "key2" {
+		t.Fatalf("APIKeys = %v, want [key1 key2]", cfg.APIKeys)
+	}
+}
+
+func TestLoadAPIKeysBlankFallsBackToSingle(t *testing.T) {
+	clearConfigEnv(t)
+	t.Setenv("IMMICH_URL", "http://immich.local")
+	t.Setenv("IMMICH_API_KEY", "single")
+	t.Setenv("IMMICH_API_KEYS", " , ,")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.APIKeys) != 1 || cfg.APIKeys[0] != "single" {
+		t.Fatalf("APIKeys = %v, want [single]", cfg.APIKeys)
+	}
+}
+
 func TestLoadDefaults(t *testing.T) {
 	clearConfigEnv(t)
 	t.Setenv("IMMICH_URL", "http://immich.local")
@@ -47,8 +97,8 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.ImmichURL != "http://immich.local" {
 		t.Errorf("ImmichURL = %q", cfg.ImmichURL)
 	}
-	if cfg.APIKey != "key" {
-		t.Errorf("APIKey = %q", cfg.APIKey)
+	if len(cfg.APIKeys) != 1 || cfg.APIKeys[0] != "key" {
+		t.Errorf("APIKeys = %v, want [key]", cfg.APIKeys)
 	}
 	if cfg.ListenAddr != ":8200" {
 		t.Errorf("ListenAddr default = %q, want :8200", cfg.ListenAddr)
