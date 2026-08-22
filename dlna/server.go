@@ -29,6 +29,8 @@ func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("/description.xml", s.handleDescription)
+	mux.HandleFunc("/icon48.png", s.handleIcon48)
+	mux.HandleFunc("/icon120.png", s.handleIcon120)
 	mux.HandleFunc("/ContentDirectory.xml", s.handleContentDirectorySCPD)
 	mux.HandleFunc("/ConnectionManager.xml", s.handleConnectionManagerSCPD)
 	mux.HandleFunc("/ctl/ContentDirectory", s.handleContentDirectoryControl)
