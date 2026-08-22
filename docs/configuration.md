@@ -70,30 +70,31 @@ local-build instructions and image tagging scheme.
 
 [`unraid-template.xml`](../unraid-template.xml) is a Community
 Applications-style template. This app isn't published to the CA app
-store, so add it manually with one of these two methods:
+store, so the **Template** dropdown on the Add Container page (a plain
+`<select>` - you can't type or paste into it) won't list it until you've
+added it by one of these two methods:
 
-- **Add Container → Template field.** Docker tab → **Add Container** →
-  paste `https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/unraid-template.xml`
-  into the **"Template"** field at the top of that form (it's a
-  combo box, not just a dropdown - you can type/paste into it). This
-  fetches and parses the XML immediately and fills in every field below
-  it. Do **not** paste this into the "Template Repositories" box at the
-  bottom of the main Docker tab - that one expects a repository URL to
-  scan for multiple templates, not a link to a single `.xml` file, and
-  silently fails to populate the Config fields (Immich URL, cache path,
-  etc.) if you use it for a single-file link like this.
-- **Drop the file locally.** Download `unraid-template.xml` and copy it
-  to `/boot/config/plugins/dockerMan/templates-user/immich-dlna-proxy.xml`
+- **Drop the file locally (simplest, always works).** Download
+  `unraid-template.xml` and copy it to
+  `/boot/config/plugins/dockerMan/templates-user/immich-dlna-proxy.xml`
   (reachable over the network as
   `\\<tower>\flash\config\plugins\dockerMan\templates-user\`). Then open
-  **Add Container** and pick "immich-dlna-proxy" from the **"Select a
-  template"** dropdown. This reads the file straight off disk, so it
-  works even if the first method leaves the form blank.
+  **Docker tab → Add Container** and pick "immich-dlna-proxy" from the
+  **"Select a template"** dropdown - it now appears because Unraid scans
+  that folder to build the list. You'll need to re-download the file
+  manually if the template ever changes.
+- **Template Repositories (auto-updating).** Docker tab → scroll to the
+  bottom → **"Template Repositories"** box → add
+  `https://github.com/jastBytes/immich-dlna-proxy` → **Save**. Unraid
+  scans the repo for `.xml` templates and adds them to the dropdown;
+  it re-checks the repo periodically so template updates show up without
+  manual re-downloading.
 
-If **Add Container** ever loads with the Name/Repository/Icon fields
-filled in but none of the Config fields showing, that's the signature of
-the template URL having gone into the wrong box - re-add it with one of
-the two methods above rather than troubleshooting further.
+Either way, once "immich-dlna-proxy" is selectable from the **"Select a
+template"** dropdown, choosing it should populate every field below
+(Repository, Network Type, Icon, and all the Config fields - Immich URL,
+Immich API Key, cache path, etc.). If it doesn't, or the container name
+doesn't work, please open an issue.
 
 It pre-configures:
 
