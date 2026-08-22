@@ -1,9 +1,16 @@
 package dlna
 
 import (
+	_ "embed"
 	"fmt"
 	"net/http"
 )
+
+//go:embed icons/icon48.png
+var icon48PNG []byte
+
+//go:embed icons/icon120.png
+var icon120PNG []byte
 
 const deviceDescriptionTmpl = `<?xml version="1.0" encoding="UTF-8"?>
 <root xmlns="urn:schemas-upnp-org:device-1-0" xmlns:dlna="urn:schemas-dlna-org:device-1-0">
@@ -19,6 +26,22 @@ const deviceDescriptionTmpl = `<?xml version="1.0" encoding="UTF-8"?>
     <modelNumber>1.0</modelNumber>
     <UDN>uuid:%s</UDN>
     <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
+    <iconList>
+      <icon>
+        <mimetype>image/png</mimetype>
+        <width>48</width>
+        <height>48</height>
+        <depth>24</depth>
+        <url>/icon48.png</url>
+      </icon>
+      <icon>
+        <mimetype>image/png</mimetype>
+        <width>120</width>
+        <height>120</height>
+        <depth>24</depth>
+        <url>/icon120.png</url>
+      </icon>
+    </iconList>
     <serviceList>
       <service>
         <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>
@@ -172,6 +195,16 @@ func (s *Server) handleContentDirectorySCPD(w http.ResponseWriter, r *http.Reque
 func (s *Server) handleConnectionManagerSCPD(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
 	_, _ = w.Write([]byte(connectionManagerSCPD))
+}
+
+func (s *Server) handleIcon48(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	_, _ = w.Write(icon48PNG)
+}
+
+func (s *Server) handleIcon120(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	_, _ = w.Write(icon120PNG)
 }
 
 func htmlEscapeName(s string) string {

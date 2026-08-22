@@ -1,6 +1,7 @@
 package dlna
 
 import (
+	"bytes"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -50,9 +51,32 @@ func TestHandleDescription(t *testing.T) {
 		"/ctl/ContentDirectory",
 		"/ctl/ConnectionManager",
 		"/ctl/X_MS_MediaReceiverRegistrar",
+		"<iconList>",
+		"/icon48.png",
+		"/icon120.png",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("expected description to mention %q, got: %s", want, body)
+		}
+	}
+}
+
+func TestHandleIcons(t *testing.T) {
+	srv := newTestServer(t)
+
+	for _, path := range []string{"/icon48.png", "/icon120.png"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.Mux().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d", path, rec.Code)
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+			t.Errorf("%s: Content-Type = %q", path, ct)
+		}
+		if !bytes.HasPrefix(rec.Body.Bytes(), []byte("\x89PNG\r\n\x1a\n")) {
+			t.Errorf("%s: body does not start with the PNG signature", path)
 		}
 	}
 }
