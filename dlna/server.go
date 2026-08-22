@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,25 +23,36 @@ import (
 // shrink it instead of waiting out the real 30s.
 var fetchQueueTimeout = 30 * time.Second
 
+// UserClient pairs an Immich client with the display name of the Immich
+// account it authenticates as. Name is only ever shown to DLNA clients
+// when len(users) > 1 (see browseMultiUser in contentdirectory.go) - a
+// single configured user browses exactly as before, with no per-user
+// folder level, so Name is unused in that case.
+type UserClient struct {
+	Name   string
+	Client *immich.Client
+}
+
 type Server struct {
-	cfg    *config.Config
-	immich *immich.Client
-	cache  *cache.Cache // nil if caching is disabled
+	cfg   *config.Config
+	users []UserClient
+	cache *cache.Cache // nil if caching is disabled
 
 	// fetchSem bounds how many /media/* requests may be downloading from
-	// Immich at once. A TV rapidly scrolling through a large album can
-	// otherwise fire off dozens of concurrent thumbnail requests, each a
-	// cache miss, and overwhelm Immich; requests beyond the limit queue
-	// for a free slot instead, up to fetchQueueTimeout.
+	// Immich at once, across all configured accounts. A TV rapidly
+	// scrolling through a large album can otherwise fire off dozens of
+	// concurrent thumbnail requests, each a cache miss, and overwhelm
+	// Immich; requests beyond the limit queue for a free slot instead, up
+	// to fetchQueueTimeout.
 	fetchSem chan struct{}
 }
 
-func NewServer(cfg *config.Config, client *immich.Client, c *cache.Cache) *Server {
+func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
 	concurrency := cfg.MediaFetchConcurrency
 	if concurrency <= 0 {
 		concurrency = 4
 	}
-	return &Server{cfg: cfg, immich: client, cache: c, fetchSem: make(chan struct{}, concurrency)}
+	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency)}
 }
 
 func (s *Server) Mux() http.Handler {
@@ -92,12 +104,72 @@ func loggingMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
-	assetID := strings.TrimPrefix(r.URL.Path, "/media/")
+// parseMediaPath parses the path segment after "/media/". With a single
+// configured user it's a bare assetID, preserving the original
+// /media/{assetID} URL shape. With multiple IMMICH_API_KEYS configured, the
+// DIDL-Lite <res> URLs built in contentdirectory.go instead encode which
+// configured account's API key must be used to download the asset, as
+// "{userIdx}/{assetID}" - the account isn't otherwise derivable from the
+// asset ID alone, since each account only has permission to download
+// assets it can see. Asset IDs are UUIDs and never contain "/", so the two
+// shapes never collide.
+func parseMediaPath(path string, numUsers int) (userIdx int, assetID string, ok bool) {
+	if path == "" {
+		return 0, "", false
+	}
+	i := strings.IndexByte(path, '/')
+	if i < 0 {
+		return 0, path, true
+	}
+	idx, err := strconv.Atoi(path[:i])
+	if err != nil || idx < 0 || idx >= numUsers {
+		return 0, "", false
+	}
+	assetID = path[i+1:]
 	if assetID == "" {
+		return 0, "", false
+	}
+	return idx, assetID, true
+}
+
+// mediaURL builds the absolute URL a DLNA client GETs to fetch a photo's
+// bytes (see parseMediaPath for how handleMedia decodes it). userIdx is -1
+// for the single-user case, rendering the original /media/{assetID} shape
+// unchanged; otherwise it identifies which configured account owns the
+// asset.
+func mediaURL(baseURL string, userIdx int, assetID string) string {
+	if userIdx < 0 {
+		return baseURL + "/media/" + assetID
+	}
+	return baseURL + "/media/" + strconv.Itoa(userIdx) + "/" + assetID
+}
+
+// personThumbnailURL is mediaURL's counterpart for a person's face-crop
+// thumbnail (see Server.handlePersonThumbnail).
+func personThumbnailURL(baseURL string, userIdx int, personID string) string {
+	if userIdx < 0 {
+		return baseURL + "/media/person/" + personID
+	}
+	return baseURL + "/media/person/" + strconv.Itoa(userIdx) + "/" + personID
+}
+
+// thumbnailURL is mediaURL's counterpart for an asset's Immich-generated
+// preview thumbnail (see Server.handleThumbnail), used as a video item's
+// albumArtURI in buildAssetItem.
+func thumbnailURL(baseURL string, userIdx int, assetID string) string {
+	if userIdx < 0 {
+		return baseURL + "/thumbnail/" + assetID
+	}
+	return baseURL + "/thumbnail/" + strconv.Itoa(userIdx) + "/" + assetID
+}
+
+func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
+	userIdx, assetID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/media/"), len(s.users))
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	client := s.users[userIdx].Client
 
 	// We always buffer and decode the downloaded bytes - not just when
 	// resizing is configured - because normalizing EXIF orientation
@@ -105,7 +177,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// show raw pixels, so a portrait photo tagged "rotate 90" needs the
 	// rotation baked into the pixels themselves to display upright.
 	s.serveMedia(w, r, assetID,
-		func() (io.ReadCloser, string, error) { return s.immich.DownloadOriginal(assetID) },
+		func() (io.ReadCloser, string, error) { return client.DownloadOriginal(assetID) },
 		func(data []byte) []byte {
 			data = s.fixOrientation(assetID, data)
 			return s.maybeResize(assetID, data)
@@ -122,14 +194,18 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 // with an actual asset ID, and skips fixOrientation/maybeResize: Immich
 // already generates it as a small, correctly-oriented face crop.
 func (s *Server) handlePersonThumbnail(w http.ResponseWriter, r *http.Request) {
-	personID := strings.TrimPrefix(r.URL.Path, "/media/person/")
-	if personID == "" {
+	userIdx, personID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/media/person/"), len(s.users))
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	client := s.users[userIdx].Client
 
+	// Cached under the bare person ID, with no userIdx component: person
+	// IDs, like asset IDs, are UUIDs unique across every account on the
+	// same Immich server, so they can't collide between accounts either.
 	s.serveMedia(w, r, "person:"+personID,
-		func() (io.ReadCloser, string, error) { return s.immich.GetPersonThumbnail(personID) },
+		func() (io.ReadCloser, string, error) { return client.GetPersonThumbnail(personID) },
 		nil)
 }
 
@@ -169,6 +245,13 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 		return
 	}
 
+	// Cache miss (or caching disabled): fetch the full original from
+	// Immich. handleMedia's transform always buffers and decodes it - not
+	// just when resizing is configured - because normalizing EXIF
+	// orientation requires it too: most DLNA renderers ignore the
+	// orientation tag and show raw pixels, so a portrait photo tagged
+	// "rotate 90" needs the rotation baked into the pixels themselves to
+	// display upright.
 	body, mimeType, err := fetch()
 	if err != nil {
 		log.Printf("fetch(%s) failed: %v", cacheKey, err)
@@ -281,13 +364,14 @@ func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request, cacheKey, mi
 // can. Thumbnails are small and cheap for Immich to regenerate, so unlike
 // /media, this isn't cached.
 func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
-	assetID := strings.TrimPrefix(r.URL.Path, "/thumbnail/")
-	if assetID == "" {
+	userIdx, assetID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/thumbnail/"), len(s.users))
+	if !ok {
 		http.NotFound(w, r)
 		return
 	}
+	client := s.users[userIdx].Client
 
-	body, mimeType, err := s.immich.GetAssetThumbnail(assetID)
+	body, mimeType, err := client.GetAssetThumbnail(assetID)
 	if err != nil {
 		log.Printf("GetAssetThumbnail(%s) failed: %v", assetID, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)

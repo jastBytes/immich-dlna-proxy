@@ -102,83 +102,188 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 
 	var didl string
 	var returned, total int
+	var ok bool
 
+	if len(s.users) > 1 {
+		didl, returned, total, ok = s.browseMultiUser(w, objectID, args, baseURL)
+	} else {
+		// Single configured account: browse exactly as if it were the only
+		// thing that ever existed - no "user:<idx>" folder level, and
+		// /media/, /thumbnail/ URLs keep their original /media/{assetID}
+		// shape (userIdx -1, see mediaURL).
+		didl, returned, total, ok = s.browseUserScope(w, s.users[0].Client, -1, "", objectID, s.cfg.FriendlyName, "-1", "0", args, baseURL)
+	}
+	if !ok {
+		return
+	}
+
+	if !isAssetObjectID(objectID) {
+		log.Printf("Browse %s %s -> %d/%d items", objectID, args.BrowseFlag, returned, total)
+	}
+
+	writeSoapResponse(w, cdNS, responseName, map[string]string{
+		"Result":         didl,
+		"NumberReturned": strconv.Itoa(returned),
+		"TotalMatches":   strconv.Itoa(total),
+		"UpdateID":       "1",
+	})
+}
+
+// isAssetObjectID reports whether objectID is a single photo/video leaf, in
+// either the single-user ("asset:<id>") or multi-user
+// ("user:<idx>:asset:<id>") ObjectID shape - used only to skip the routine
+// per-Browse log line for the especially frequent per-asset lookups DLNA
+// clients make.
+func isAssetObjectID(objectID string) bool {
+	return strings.Contains(objectID, "asset:")
+}
+
+// browseMultiUser handles the top of the ObjectID space when more than one
+// IMMICH_API_KEYS entry is configured: "0" lists one container per
+// configured account (named via UserClient.Name, fetched from Immich at
+// startup - see main.go), and "user:<idx>[:<local>]" descends into that
+// account's own albums/people/timeline tree via browseUserScope.
+func (s *Server) browseMultiUser(w http.ResponseWriter, objectID string, args *browseArgs, baseURL string) (didl string, returned, total int, ok bool) {
 	switch {
 	case objectID == "0" && args.BrowseFlag == "BrowseMetadata":
-		didl = wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, 3, ""))
-		returned, total = 1, 1
+		return wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, len(s.users), "")), 1, 1, true
 
-	case objectID == "0": // BrowseDirectChildren on root: fixed "Albums" / "People" / "Timeline" folders
-		albums, err := s.immich.ListAlbums()
+	case objectID == "0": // BrowseDirectChildren on root: one folder per configured account
+		fragments := make([]string, len(s.users))
+		for i, u := range s.users {
+			fragments[i] = buildContainer(userObjectID(i), "0", u.Name, 3, "")
+		}
+		total = len(fragments)
+		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
+		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, true
+
+	case strings.HasPrefix(objectID, "user:"):
+		idx, local, valid := parseUserObjectID(objectID, len(s.users))
+		if !valid {
+			http.Error(w, "unknown object", http.StatusNotFound)
+			return "", 0, 0, false
+		}
+		user := s.users[idx]
+		return s.browseUserScope(w, user.Client, idx, "user:"+strconv.Itoa(idx)+":", local, user.Name, "0", userObjectID(idx), args, baseURL)
+
+	default:
+		http.Error(w, "unknown object", http.StatusNotFound)
+		return "", 0, 0, false
+	}
+}
+
+// userObjectID is the ObjectID for one configured account's top-level
+// folder.
+func userObjectID(idx int) string {
+	return "user:" + strconv.Itoa(idx)
+}
+
+// parseUserObjectID splits a multi-user ObjectID like "user:1" or
+// "user:1:album:abc" into the configured-account index and the remaining
+// local ObjectID relative to that account's own tree ("0" for the bare
+// "user:<idx>" case, meaning that account's own root - see
+// browseUserScope's local=="0" case). ok is false for a malformed or
+// out-of-range index.
+func parseUserObjectID(objectID string, numUsers int) (idx int, local string, ok bool) {
+	rest := strings.TrimPrefix(objectID, "user:")
+	idxStr, local, found := strings.Cut(rest, ":")
+	if !found {
+		local = "0"
+	}
+	n, err := strconv.Atoi(idxStr)
+	if err != nil || n < 0 || n >= numUsers {
+		return 0, "", false
+	}
+	return n, local, true
+}
+
+// browseUserScope implements Browse/Search within one configured account's
+// namespace - this is the entire single-user Browse behavior, generalized
+// so the multi-user case can reuse it once per account instead of
+// duplicating it. local is the ObjectID with any "user:<idx>:" prefix
+// already stripped, so it's "0" for this scope's own root and
+// "albums"/"album:<id>"/"people"/"person:<id>"/"timeline"/"asset:<id>"
+// exactly as in the single-user case. childPrefix is prepended to every
+// child ObjectID this scope produces ("" for the single-user case,
+// "user:<idx>:" for a multi-user one) so a later Browse call routes back
+// to the same account. userIdx is threaded through into
+// <res>/albumArtURI URLs (see mediaURL, thumbnailURL, albumArtURI,
+// personArtURI) so /media/ and /thumbnail/ know which account's API key
+// to fetch with (-1 for the single-user case, which keeps the original
+// URL shapes). rootSelfID/rootParentID/rootTitle describe how local=="0"
+// renders itself under BrowseMetadata.
+func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, ok bool) {
+	switch {
+	case local == "0" && args.BrowseFlag == "BrowseMetadata":
+		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, 3, "")), 1, 1, true
+
+	case local == "0": // BrowseDirectChildren on this account's root: fixed "Albums" / "People" / "Timeline" folders
+		albums, err := client.ListAlbums()
 		if err != nil {
 			log.Printf("ListAlbums failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
-		people, err := s.immich.ListPeople()
+		people, err := client.ListPeople()
 		if err != nil {
 			log.Printf("ListPeople failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
 		namedPeople := countNamedPeople(people)
 
 		fragments := []string{
-			buildContainer("albums", "0", "Albums", len(albums), ""),
-			buildContainer("people", "0", "People", namedPeople, ""),
+			buildContainer(childPrefix+"albums", rootSelfID, "Albums", len(albums), ""),
+			buildContainer(childPrefix+"people", rootSelfID, "People", namedPeople, ""),
 			// childCount omitted (-1): an accurate count would mean
 			// paginating through every asset in the library just to
 			// render the root listing, which doesn't scale.
-			buildContainer("timeline", "0", "Timeline", -1, ""),
+			buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, ""),
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
-		didl = wrapDIDL(strings.Join(fragments, ""))
-		returned = len(fragments)
+		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, true
 
-	case objectID == "albums" && args.BrowseFlag == "BrowseMetadata":
-		albums, err := s.immich.ListAlbums()
+	case local == "albums" && args.BrowseFlag == "BrowseMetadata":
+		albums, err := client.ListAlbums()
 		if err != nil {
 			log.Printf("ListAlbums failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
-		didl = wrapDIDL(buildContainer("albums", "0", "Albums", len(albums), ""))
-		returned, total = 1, 1
+		return wrapDIDL(buildContainer(childPrefix+"albums", rootSelfID, "Albums", len(albums), "")), 1, 1, true
 
-	case objectID == "albums": // BrowseDirectChildren: list albums
-		albums, err := s.immich.ListAlbums()
+	case local == "albums": // BrowseDirectChildren: list albums
+		albums, err := client.ListAlbums()
 		if err != nil {
 			log.Printf("ListAlbums failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
 		sortByTitle(albums, func(a immich.Album) string { return a.AlbumName }, parseSortCriteria(args.SortCriteria))
 		total = len(albums)
 		paged := page(albums, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildContainer("album:"+a.ID, "albums", a.AlbumName, a.AssetCount, albumArtURI(baseURL, a.AlbumThumbnailAssetID)))
+			b.WriteString(buildContainer(childPrefix+"album:"+a.ID, childPrefix+"albums", a.AlbumName, a.AssetCount, albumArtURI(baseURL, userIdx, a.AlbumThumbnailAssetID)))
 		}
-		didl = wrapDIDL(b.String())
-		returned = len(paged)
+		return wrapDIDL(b.String()), len(paged), total, true
 
-	case objectID == "people" && args.BrowseFlag == "BrowseMetadata":
-		people, err := s.immich.ListPeople()
+	case local == "people" && args.BrowseFlag == "BrowseMetadata":
+		people, err := client.ListPeople()
 		if err != nil {
 			log.Printf("ListPeople failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
-		didl = wrapDIDL(buildContainer("people", "0", "People", countNamedPeople(people), ""))
-		returned, total = 1, 1
+		return wrapDIDL(buildContainer(childPrefix+"people", rootSelfID, "People", countNamedPeople(people), "")), 1, 1, true
 
-	case objectID == "people": // BrowseDirectChildren: list named people
-		people, err := s.immich.ListPeople()
+	case local == "people": // BrowseDirectChildren: list named people
+		people, err := client.ListPeople()
 		if err != nil {
 			log.Printf("ListPeople failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
 		named := make([]immich.Person, 0, len(people))
 		for _, p := range people {
@@ -194,22 +299,20 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			// childCount omitted (-1): knowing it accurately would need one
 			// GetPersonStatistics call per person, which doesn't scale for
 			// libraries with many tagged people.
-			b.WriteString(buildContainer("person:"+p.ID, "people", p.Name, -1, personArtURI(baseURL, p)))
+			b.WriteString(buildContainer(childPrefix+"person:"+p.ID, childPrefix+"people", p.Name, -1, personArtURI(baseURL, userIdx, p)))
 		}
-		didl = wrapDIDL(b.String())
-		returned = len(paged)
+		return wrapDIDL(b.String()), len(paged), total, true
 
-	case objectID == "timeline" && args.BrowseFlag == "BrowseMetadata":
+	case local == "timeline" && args.BrowseFlag == "BrowseMetadata":
 		// childCount omitted (-1): see the root listing above for why.
-		didl = wrapDIDL(buildContainer("timeline", "0", "Timeline", -1, ""))
-		returned, total = 1, 1
+		return wrapDIDL(buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, "")), 1, 1, true
 
-	case objectID == "timeline": // BrowseDirectChildren: every photo/video, newest first
-		assets, err := s.immich.ListTimelineAssets()
+	case local == "timeline": // BrowseDirectChildren: every photo/video, newest first
+		assets, err := client.ListTimelineAssets()
 		if err != nil {
 			log.Printf("ListTimelineAssets failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
 		media := filterSupportedAssets(assets)
 		sortPhotos(media, parseSortCriteria(args.SortCriteria))
@@ -217,99 +320,80 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, objectID, a))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a))
 		}
-		didl = wrapDIDL(b.String())
-		returned = len(paged)
+		return wrapDIDL(b.String()), len(paged), total, true
 
-	case strings.HasPrefix(objectID, "album:"):
-		albumID := strings.TrimPrefix(objectID, "album:")
-		album, err := s.immich.GetAlbum(albumID)
+	case strings.HasPrefix(local, "album:"):
+		albumID := strings.TrimPrefix(local, "album:")
+		album, err := client.GetAlbum(albumID)
 		if err != nil {
 			log.Printf("GetAlbum(%s) failed: %v", albumID, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
-		assets, err := s.immich.GetAlbumAssets(albumID)
+		assets, err := client.GetAlbumAssets(albumID)
 		if err != nil {
 			log.Printf("GetAlbumAssets(%s) failed: %v", albumID, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
 		media := filterSupportedAssets(assets)
 
 		if args.BrowseFlag == "BrowseMetadata" {
-			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(media), albumArtURI(baseURL, album.AlbumThumbnailAssetID)))
-			returned, total = 1, 1
-		} else {
-			sortPhotos(media, parseSortCriteria(args.SortCriteria))
-			total = len(media)
-			paged := page(media, args.StartingIndex, args.RequestedCount)
-			var b strings.Builder
-			for _, a := range paged {
-				b.WriteString(buildAssetItem(baseURL, objectID, a))
-			}
-			didl = wrapDIDL(b.String())
-			returned = len(paged)
+			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"albums", album.AlbumName, len(media), albumArtURI(baseURL, userIdx, album.AlbumThumbnailAssetID))), 1, 1, true
 		}
+		sortPhotos(media, parseSortCriteria(args.SortCriteria))
+		total = len(media)
+		paged := page(media, args.StartingIndex, args.RequestedCount)
+		var b strings.Builder
+		for _, a := range paged {
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a))
+		}
+		return wrapDIDL(b.String()), len(paged), total, true
 
-	case strings.HasPrefix(objectID, "person:"):
-		personID := strings.TrimPrefix(objectID, "person:")
+	case strings.HasPrefix(local, "person:"):
+		personID := strings.TrimPrefix(local, "person:")
 
 		if args.BrowseFlag == "BrowseMetadata" {
-			person, err := s.immich.GetPerson(personID)
+			person, err := client.GetPerson(personID)
 			if err != nil {
 				log.Printf("GetPerson(%s) failed: %v", personID, err)
 				http.Error(w, "upstream error", http.StatusBadGateway)
-				return
+				return "", 0, 0, false
 			}
-			didl = wrapDIDL(buildContainer(objectID, "people", person.Name, -1, personArtURI(baseURL, *person)))
-			returned, total = 1, 1
-		} else {
-			assets, err := s.immich.GetPersonAssets(personID)
-			if err != nil {
-				log.Printf("GetPersonAssets(%s) failed: %v", personID, err)
-				http.Error(w, "upstream error", http.StatusBadGateway)
-				return
-			}
-			media := filterSupportedAssets(assets)
-			sortPhotos(media, parseSortCriteria(args.SortCriteria))
-			total = len(media)
-			paged := page(media, args.StartingIndex, args.RequestedCount)
-			var b strings.Builder
-			for _, a := range paged {
-				b.WriteString(buildAssetItem(baseURL, objectID, a))
-			}
-			didl = wrapDIDL(b.String())
-			returned = len(paged)
+			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"people", person.Name, -1, personArtURI(baseURL, userIdx, *person))), 1, 1, true
 		}
+		assets, err := client.GetPersonAssets(personID)
+		if err != nil {
+			log.Printf("GetPersonAssets(%s) failed: %v", personID, err)
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return "", 0, 0, false
+		}
+		media := filterSupportedAssets(assets)
+		sortPhotos(media, parseSortCriteria(args.SortCriteria))
+		total = len(media)
+		paged := page(media, args.StartingIndex, args.RequestedCount)
+		var b strings.Builder
+		for _, a := range paged {
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a))
+		}
+		return wrapDIDL(b.String()), len(paged), total, true
 
-	case strings.HasPrefix(objectID, "asset:"):
-		assetID := strings.TrimPrefix(objectID, "asset:")
-		asset, err := s.immich.GetAsset(assetID)
+	case strings.HasPrefix(local, "asset:"):
+		assetID := strings.TrimPrefix(local, "asset:")
+		asset, err := client.GetAsset(assetID)
 		if err != nil {
 			log.Printf("GetAsset(%s) failed: %v", assetID, err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
-			return
+			return "", 0, 0, false
 		}
-		didl = wrapDIDL(buildAssetItem(baseURL, "0", *asset))
-		returned, total = 1, 1
+		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset)), 1, 1, true
 
 	default:
 		http.Error(w, "unknown object", http.StatusNotFound)
-		return
+		return "", 0, 0, false
 	}
-
-	if !strings.HasPrefix(objectID, "asset:") {
-		log.Printf("Browse %s %s -> %d/%d items", objectID, args.BrowseFlag, returned, total)
-	}
-
-	writeSoapResponse(w, cdNS, responseName, map[string]string{
-		"Result":         didl,
-		"NumberReturned": strconv.Itoa(returned),
-		"TotalMatches":   strconv.Itoa(total),
-		"UpdateID":       "1",
-	})
 }
 
 // sortRequest is the (property, direction) this server extracted from a
@@ -411,40 +495,45 @@ func filterSupportedAssets(assets []immich.Asset) []immich.Asset {
 	return out
 }
 
-// buildAssetItem renders the DIDL-Lite <item> for one asset. Videos use
-// Immich's generated thumbnail as their albumArtURI (see
-// buildItem/GetAssetThumbnail) since a video's own bytes can't double as
-// a preview image the way a photo's can.
-func buildAssetItem(baseURL, parentID string, a immich.Asset) string {
-	resURL := baseURL + "/media/" + a.ID
+// buildAssetItem renders the DIDL-Lite <item> for one asset, with id and
+// parentID as given (see browseUserScope's childPrefix, which the caller
+// has already applied). Videos use Immich's generated thumbnail as their
+// albumArtURI (see buildItem/GetAssetThumbnail) since a video's own bytes
+// can't double as a preview image the way a photo's can. userIdx scopes
+// both the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL
+// do, so /media/ and /thumbnail/ know which account's API key to fetch
+// with.
+func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset) string {
+	resURL := mediaURL(baseURL, userIdx, a.ID)
 	if a.IsVideo() {
-		return buildItem("asset:"+a.ID, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, baseURL+"/thumbnail/"+a.ID, true)
+		return buildItem(id, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true)
 	}
-	return buildItem("asset:"+a.ID, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, resURL, false)
+	return buildItem(id, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, resURL, false)
 }
 
 // albumArtURI builds the cover URL for an album container from its
-// thumbnail asset ID, reusing the same /media/{id} endpoint photo items
-// use - Immich's album thumbnail is just a regular asset. Returns "" for
-// an empty album (no thumbnail asset), which buildContainer treats as
-// "no cover".
-func albumArtURI(baseURL, thumbnailAssetID string) string {
+// thumbnail asset ID, reusing the same /media/ endpoint photo items use -
+// Immich's album thumbnail is just a regular asset. userIdx is threaded
+// through the same way mediaURL uses it, so the cover fetches with the
+// right account's API key. Returns "" for an empty album (no thumbnail
+// asset), which buildContainer treats as "no cover".
+func albumArtURI(baseURL string, userIdx int, thumbnailAssetID string) string {
 	if thumbnailAssetID == "" {
 		return ""
 	}
-	return baseURL + "/media/" + thumbnailAssetID
+	return mediaURL(baseURL, userIdx, thumbnailAssetID)
 }
 
 // personArtURI builds the cover URL for a person container, if Immich has
 // a face-crop thumbnail for them. Unlike albums, a person's thumbnail
 // isn't a regular asset, so it's served from a dedicated
-// /media/person/{id} endpoint (see Server.handlePersonThumbnail) backed
-// by Client.GetPersonThumbnail.
-func personArtURI(baseURL string, p immich.Person) string {
+// /media/person/ endpoint (see Server.handlePersonThumbnail) backed by
+// Client.GetPersonThumbnail, scoped by userIdx the same way mediaURL is.
+func personArtURI(baseURL string, userIdx int, p immich.Person) string {
 	if !p.HasThumbnail() {
 		return ""
 	}
-	return baseURL + "/media/person/" + p.ID
+	return personThumbnailURL(baseURL, userIdx, p.ID)
 }
 
 func countNamedPeople(people []immich.Person) int {
