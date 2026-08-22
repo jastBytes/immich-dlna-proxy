@@ -71,6 +71,13 @@ separately at `/ContentDirectory.xml`, `/ConnectionManager.xml`, and
 `/X_MS_MediaReceiverRegistrar.xml`, and declares which SOAP actions each
 service supports.
 
+The description also declares an `<iconList>` with 48x48 and 120x120 PNG
+icons (`/icon48.png`, `/icon120.png`), embedded into the binary via
+`go:embed` from `dlna/icons/`. This is what TVs and other DLNA control
+points show next to the server's friendly name in their media-server
+list - it's rasterized once from `icon.svg` since embedded DLNA stacks
+generally expect PNG/JPEG icons, not SVG.
+
 ### 3. Control (ContentDirectory Browse)
 
 This is where Immich data gets turned into DLNA objects. The client
