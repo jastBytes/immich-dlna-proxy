@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 160">
+  <defs>
+    <linearGradient id="bg" x1="16" y1="16" x2="144" y2="144" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3b82f6"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(16,16)">
+    <rect width="128" height="128" rx="28" fill="url(#bg)"/>
+    <rect x="16" y="22" width="72" height="56" rx="8" fill="#ffffff"/>
+    <circle cx="32" cy="38" r="6" fill="#1e3a8a"/>
+    <path d="M20 68 L38 48 L52 60 L64 44 L74 66 Z" fill="#1e3a8a"/>
+    <circle cx="92" cy="90" r="26" fill="#ffffff"/>
+    <circle cx="78" cy="103" r="3.4" fill="#1e3a8a"/>
+    <path d="M78 91 A12 12 0 0 1 90 103" fill="none" stroke="#1e3a8a" stroke-width="5" stroke-linecap="round"/>
+    <path d="M78 79 A24 24 0 0 1 102 103" fill="none" stroke="#1e3a8a" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <g font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+    <text x="168" y="92" font-size="46" font-weight="700" fill="#f8fafc">immich</text>
+    <text x="169" y="120" font-size="19" font-weight="600" letter-spacing="3" fill="#94a3b8">DLNA PROXY</text>
+  </g>
+</svg>

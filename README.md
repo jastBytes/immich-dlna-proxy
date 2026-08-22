@@ -1,4 +1,7 @@
-# immich-dlna-proxy
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+  <img alt="immich-dlna-proxy" src="assets/logo-light.svg" height="80">
+</picture>
 
 [![CI](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml)
 
