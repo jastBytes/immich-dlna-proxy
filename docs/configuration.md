@@ -89,6 +89,21 @@ After adding the container, fill in **Immich URL** and **Immich API
 Key** at minimum, then start it. Check the container's log for the
 "Starting SSDP responder" line to confirm it came up correctly.
 
+### Fixing `cache: put(...) failed: ... permission denied`
+
+The container runs as a fixed non-root user (UID/GID `65532`), and Unraid
+creates new appdata folders owned by `root`. The image's baked-in
+ownership only covers its own layer, not a host directory bind-mounted
+over it, so the container can't write to a freshly-created cache folder.
+Fix it once from the Unraid terminal (or an "User Scripts" one-off):
+
+```bash
+chown -R 65532:65532 /mnt/user/appdata/immich-dlna-proxy/cache
+```
+
+(swap in your actual **Cache** path if you changed it from the
+template default), then restart the container.
+
 ## Tuning the cache
 
 - Lower `CACHE_MAX_MB` if disk space on your Unraid array/cache pool is
