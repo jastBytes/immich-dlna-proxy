@@ -53,6 +53,46 @@ func browse(t *testing.T, tsURL, objectID, flag string) string {
 	return string(body2)
 }
 
+// browseSorted is like browse but lets the caller set SortCriteria.
+func browseSorted(t *testing.T, tsURL, objectID, flag, sortCriteria string) string {
+	t.Helper()
+	body := `<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+  <s:Body>
+    <u:Browse xmlns:u="urn:schemas-upnp-org:service:ContentDirectory:1">
+      <ObjectID>` + objectID + `</ObjectID>
+      <BrowseFlag>` + flag + `</BrowseFlag>
+      <Filter>*</Filter>
+      <StartingIndex>0</StartingIndex>
+      <RequestedCount>0</RequestedCount>
+      <SortCriteria>` + sortCriteria + `</SortCriteria>
+    </u:Browse>
+  </s:Body>
+</s:Envelope>`
+
+	req, err := http.NewRequest(http.MethodPost, tsURL+"/ctl/ContentDirectory", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", `text/xml; charset="utf-8"`)
+	req.Header.Set("SOAPACTION", `"urn:schemas-upnp-org:service:ContentDirectory:1#Browse"`)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("Browse(%s, %s): unexpected status %s", objectID, flag, resp.Status)
+	}
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(respBody)
+}
+
 // didlResult extracts and unescapes the <Result> (DIDL-Lite) element from
 // a raw Browse SOAP response.
 func didlResult(t *testing.T, soapResponse string) string {
@@ -281,6 +321,136 @@ func TestBrowseAssetReturnsPhotoItem(t *testing.T) {
 	}
 }
 
+// newTestServerWithUnsortedFakeImmich is like newTestServerWithFakeImmich
+// but every listing comes back in an order that isn't already
+// alphabetical, so sorting behavior is actually observable.
+func newTestServerWithUnsortedFakeImmich(t *testing.T) (srvURL string) {
+	t.Helper()
+
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums":
+			_, _ = w.Write([]byte(`[
+				{"id":"album-zebra","albumName":"Zebra","assetCount":0},
+				{"id":"album-apple","albumName":"Apple","assetCount":0}
+			]`))
+		case "/api/albums/album1":
+			_, _ = w.Write([]byte(`{"id":"album1","albumName":"Mixed","assetCount":2}`))
+		case "/api/people":
+			_, _ = w.Write([]byte(`{"total":2,"hidden":0,"people":[
+				{"id":"person-zack","name":"Zack","isHidden":false},
+				{"id":"person-amy","name":"Amy","isHidden":false}
+			]}`))
+		case "/api/search/metadata":
+			body, _ := io.ReadAll(r.Body)
+			switch {
+			case strings.Contains(string(body), `"albumIds"`):
+				_, _ = w.Write([]byte(`{"assets":{"total":2,"count":2,"nextPage":null,
+					"items":[
+						{"id":"photo-zzz","originalFileName":"zzz.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-06-01T00:00:00Z"},
+						{"id":"photo-aaa","originalFileName":"aaa.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2020-01-01T00:00:00Z"}
+					]}}`))
+			case strings.Contains(string(body), `"personIds"`):
+				_, _ = w.Write([]byte(`{"assets":{"total":2,"count":2,"nextPage":null,
+					"items":[
+						{"id":"photo-zzz","originalFileName":"zzz.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-06-01T00:00:00Z"},
+						{"id":"photo-aaa","originalFileName":"aaa.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2020-01-01T00:00:00Z"}
+					]}}`))
+			default:
+				http.NotFound(w, r)
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fakeImmich.Close)
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	return ts.URL
+}
+
+func TestBrowseHonorsSortCriteriaOnAlbums(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	ascending := didlResult(t, browseSorted(t, ts, "albums", "BrowseDirectChildren", "+dc:title"))
+	if strings.Index(ascending, "Apple") > strings.Index(ascending, "Zebra") || !strings.Contains(ascending, "Apple") {
+		t.Errorf("expected Apple before Zebra with +dc:title, got: %s", ascending)
+	}
+
+	descending := didlResult(t, browseSorted(t, ts, "albums", "BrowseDirectChildren", "-dc:title"))
+	if strings.Index(descending, "Zebra") > strings.Index(descending, "Apple") || !strings.Contains(descending, "Zebra") {
+		t.Errorf("expected Zebra before Apple with -dc:title, got: %s", descending)
+	}
+
+	unsorted := didlResult(t, browseSorted(t, ts, "albums", "BrowseDirectChildren", ""))
+	if strings.Index(unsorted, "Zebra") > strings.Index(unsorted, "Apple") {
+		t.Errorf("expected upstream order (Zebra, Apple) preserved without SortCriteria, got: %s", unsorted)
+	}
+}
+
+func TestBrowseHonorsSortCriteriaOnPeople(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	ascending := didlResult(t, browseSorted(t, ts, "people", "BrowseDirectChildren", "+dc:title"))
+	if strings.Index(ascending, "Amy") > strings.Index(ascending, "Zack") || !strings.Contains(ascending, "Amy") {
+		t.Errorf("expected Amy before Zack with +dc:title, got: %s", ascending)
+	}
+}
+
+func TestBrowseHonorsSortCriteriaOnAlbumPhotos(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	ascending := didlResult(t, browseSorted(t, ts, "album:album1", "BrowseDirectChildren", "+dc:title"))
+	if strings.Index(ascending, "aaa.jpg") > strings.Index(ascending, "zzz.jpg") || !strings.Contains(ascending, "aaa.jpg") {
+		t.Errorf("expected aaa.jpg before zzz.jpg with +dc:title, got: %s", ascending)
+	}
+}
+
+func TestBrowseHonorsSortCriteriaOnPersonPhotos(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	ascending := didlResult(t, browseSorted(t, ts, "person:person1", "BrowseDirectChildren", "+dc:title"))
+	if strings.Index(ascending, "aaa.jpg") > strings.Index(ascending, "zzz.jpg") || !strings.Contains(ascending, "aaa.jpg") {
+		t.Errorf("expected aaa.jpg before zzz.jpg with +dc:title, got: %s", ascending)
+	}
+}
+
+// TestBrowseHonorsSortCriteriaOnAlbumPhotosByDate exercises "-dc:date"
+// (newest capture first): zzz.jpg is the newer photo (2024) despite
+// sorting last alphabetically, and aaa.jpg is the older one (2020) despite
+// sorting first alphabetically - so this only passes if dc:date sorting
+// is actually driven by fileCreatedAt rather than accidentally matching
+// the dc:title test's alphabetical order.
+func TestBrowseHonorsSortCriteriaOnAlbumPhotosByDate(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	newestFirst := didlResult(t, browseSorted(t, ts, "album:album1", "BrowseDirectChildren", "-dc:date"))
+	if strings.Index(newestFirst, "zzz.jpg") > strings.Index(newestFirst, "aaa.jpg") || !strings.Contains(newestFirst, "zzz.jpg") {
+		t.Errorf("expected newer zzz.jpg before older aaa.jpg with -dc:date, got: %s", newestFirst)
+	}
+
+	oldestFirst := didlResult(t, browseSorted(t, ts, "album:album1", "BrowseDirectChildren", "+dc:date"))
+	if strings.Index(oldestFirst, "aaa.jpg") > strings.Index(oldestFirst, "zzz.jpg") || !strings.Contains(oldestFirst, "aaa.jpg") {
+		t.Errorf("expected older aaa.jpg before newer zzz.jpg with +dc:date, got: %s", oldestFirst)
+	}
+}
+
+func TestBrowseHonorsSortCriteriaOnPersonPhotosByDate(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	newestFirst := didlResult(t, browseSorted(t, ts, "person:person1", "BrowseDirectChildren", "-dc:date"))
+	if strings.Index(newestFirst, "zzz.jpg") > strings.Index(newestFirst, "aaa.jpg") || !strings.Contains(newestFirst, "zzz.jpg") {
+		t.Errorf("expected newer zzz.jpg before older aaa.jpg with -dc:date, got: %s", newestFirst)
+	}
+}
+
 func TestBrowseUnknownObjectReturns404(t *testing.T) {
 	ts := newTestServerWithFakeImmich(t)
 
@@ -408,6 +578,9 @@ func TestHandleContentDirectoryControlGetSortCapabilities(t *testing.T) {
 	}
 	if !strings.Contains(resp, "GetSortCapabilitiesResponse") {
 		t.Errorf("expected GetSortCapabilitiesResponse, got: %s", resp)
+	}
+	if !strings.Contains(resp, "<SortCaps>dc:title,dc:date</SortCaps>") {
+		t.Errorf("expected SortCaps to advertise dc:title,dc:date, got: %s", resp)
 	}
 }
 

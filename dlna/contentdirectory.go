@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,7 +84,7 @@ func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Re
 	case env.Body.GetSearchCapabilities != nil:
 		writeSoapResponse(w, cdNS, "GetSearchCapabilitiesResponse", map[string]string{"SearchCaps": "dc:title,upnp:class"})
 	case env.Body.GetSortCapabilities != nil:
-		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": ""})
+		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": "dc:title,dc:date"})
 	case env.Body.GetSystemUpdateID != nil:
 		writeSoapResponse(w, cdNS, "GetSystemUpdateIDResponse", map[string]string{"Id": "1"})
 	default:
@@ -148,6 +149,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
+		sortByTitle(albums, func(a immich.Album) string { return a.AlbumName }, parseSortCriteria(args.SortCriteria))
 		total = len(albums)
 		paged := page(albums, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
@@ -180,6 +182,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				named = append(named, p)
 			}
 		}
+		sortByTitle(named, func(p immich.Person) string { return p.Name }, parseSortCriteria(args.SortCriteria))
 		total = len(named)
 		paged := page(named, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
@@ -212,6 +215,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos)))
 			returned, total = 1, 1
 		} else {
+			sortPhotos(photos, parseSortCriteria(args.SortCriteria))
 			total = len(photos)
 			paged := page(photos, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
@@ -243,6 +247,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				return
 			}
 			photos := filterPhotos(assets)
+			sortPhotos(photos, parseSortCriteria(args.SortCriteria))
 			total = len(photos)
 			paged := page(photos, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
@@ -281,6 +286,76 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		"TotalMatches":   strconv.Itoa(total),
 		"UpdateID":       "1",
 	})
+}
+
+// sortRequest is the (property, direction) this server extracted from a
+// DLNA SortCriteria string - see parseSortCriteria. An empty property
+// means "leave Immich's own order alone".
+type sortRequest struct {
+	property   string // "dc:title" or "dc:date"
+	descending bool
+}
+
+// parseSortCriteria extracts the first recognized property/direction pair
+// out of a DLNA SortCriteria string (e.g. "+dc:title" or
+// "-dc:date,+upnp:originalTrackNumber" - comma-separated, each entry
+// prefixed with + or -). dc:title (every container/item's name) and
+// dc:date (a photo's capture time, from Immich's fileCreatedAt) are the
+// only properties this server advertises via GetSortCapabilities; any
+// other property in the criteria is ignored rather than rejected,
+// matching this repo's pass-through-on-unsupported-input convention.
+// dc:date only makes sense for photo items, not album/people containers -
+// callers sorting a container list simply don't act on it.
+func parseSortCriteria(criteria string) sortRequest {
+	for _, part := range strings.Split(criteria, ",") {
+		switch strings.TrimSpace(part) {
+		case "+dc:title":
+			return sortRequest{property: "dc:title"}
+		case "-dc:title":
+			return sortRequest{property: "dc:title", descending: true}
+		case "+dc:date":
+			return sortRequest{property: "dc:date"}
+		case "-dc:date":
+			return sortRequest{property: "dc:date", descending: true}
+		}
+	}
+	return sortRequest{}
+}
+
+// sortByTitle sorts items in place by a case-insensitive comparison of the
+// string title returns for each, applying it only when req asked for
+// dc:title (any other/empty property leaves the slice - and thus
+// Immich's own ordering - untouched).
+func sortByTitle[T any](items []T, title func(T) string, req sortRequest) {
+	if req.property != "dc:title" {
+		return
+	}
+	slices.SortFunc(items, func(a, b T) int {
+		c := strings.Compare(strings.ToLower(title(a)), strings.ToLower(title(b)))
+		if req.descending {
+			return -c
+		}
+		return c
+	})
+}
+
+// sortPhotos sorts photo assets in place per req, supporting both
+// properties this server advertises: dc:title (filename) and dc:date
+// (capture time, via Asset.CapturedAt - an asset with a missing or
+// unparseable timestamp sorts as the zero time, i.e. oldest).
+func sortPhotos(photos []immich.Asset, req sortRequest) {
+	switch req.property {
+	case "dc:title":
+		sortByTitle(photos, func(a immich.Asset) string { return a.OriginalFileName }, req)
+	case "dc:date":
+		slices.SortFunc(photos, func(a, b immich.Asset) int {
+			c := a.CapturedAt().Compare(b.CapturedAt())
+			if req.descending {
+				return -c
+			}
+			return c
+		})
+	}
 }
 
 // page applies UPnP ContentDirectory Browse pagination: RequestedCount 0

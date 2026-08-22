@@ -126,6 +126,20 @@ limit" per spec. A client that paginates (anything with more items in a
 container than fit on one page) previously got the identical full list
 back on every page instead of successive slices of it.
 
+`GetSortCapabilities` advertises `dc:title,dc:date`. A `Browse` or
+`Search` request whose `SortCriteria` includes `+dc:title`/`-dc:title` or
+`+dc:date`/`-dc:date` (see `parseSortCriteria`/`sortByTitle`/`sortPhotos`
+in `dlna/contentdirectory.go`) gets sorted before pagination is applied:
+`dc:title` sorts albums, people, or photos case-insensitively by
+name/title; `dc:date` sorts photos by capture time (`Asset.CapturedAt`,
+parsed from Immich's `fileCreatedAt`) and only has an effect on photo
+listings (`album:<id>`/`person:<id>`) - albums and people have no
+per-item date to sort by. An asset with a missing or unparseable
+`fileCreatedAt` sorts as the oldest possible photo rather than erroring.
+Only the first recognized property in a comma-separated `SortCriteria`
+is honored; any other property is ignored, and an empty/unrecognized
+`SortCriteria` leaves Immich's own listing order untouched.
+
 A handful of other details turned out to matter for Samsung TVs
 specifically, verified by diffing wire traffic against a real minidlna
 instance on the same TV: the DIDL-Lite root element declares

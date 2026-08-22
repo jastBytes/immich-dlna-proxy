@@ -1,5 +1,7 @@
 package immich
 
+import "time"
+
 // Album is the shape returned by GET /api/albums and GET /api/albums/{id}.
 // Neither includes the album's assets (see GetAlbumAssets) - Immich
 // returns more fields than this too; we only decode what we need.
@@ -16,12 +18,28 @@ type Asset struct {
 	OriginalMimeType string `json:"originalMimeType"`
 	// Type is "IMAGE" or "VIDEO" in current Immich API versions.
 	Type string `json:"type"`
+	// FileCreatedAt is Immich's authoritative capture timestamp (RFC3339,
+	// usually derived from EXIF) - see CapturedAt.
+	FileCreatedAt string `json:"fileCreatedAt"`
 }
 
 // IsPhoto reports whether the asset should be exposed to DLNA clients.
 // We only support photos for now.
 func (a Asset) IsPhoto() bool {
 	return a.Type == "IMAGE"
+}
+
+// CapturedAt parses FileCreatedAt for sorting by capture date (dc:date in
+// DLNA SortCriteria - see sortPhotos in dlna/contentdirectory.go). An
+// asset with a missing or unparseable timestamp returns the zero time -
+// sorting as the oldest possible asset - rather than erroring, matching
+// this repo's pass-through-on-unsupported-input convention.
+func (a Asset) CapturedAt() time.Time {
+	t, err := time.Parse(time.RFC3339, a.FileCreatedAt)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
 }
 
 // Person is one entry from GET /api/people (a named face cluster).
