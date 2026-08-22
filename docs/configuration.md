@@ -69,9 +69,31 @@ local-build instructions and image tagging scheme.
 ## Running on Unraid (via the provided template)
 
 [`unraid-template.xml`](../unraid-template.xml) is a Community
-Applications-style template you can add manually (Docker → Add Container
-→ paste template URL, or drop the file into
-`/boot/config/plugins/dockerMan/templates-user/`).
+Applications-style template. This app isn't published to the CA app
+store, so add it manually with one of these two methods:
+
+- **Add Container → Template field.** Docker tab → **Add Container** →
+  paste `https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/unraid-template.xml`
+  into the **"Template"** field at the top of that form (it's a
+  combo box, not just a dropdown - you can type/paste into it). This
+  fetches and parses the XML immediately and fills in every field below
+  it. Do **not** paste this into the "Template Repositories" box at the
+  bottom of the main Docker tab - that one expects a repository URL to
+  scan for multiple templates, not a link to a single `.xml` file, and
+  silently fails to populate the Config fields (Immich URL, cache path,
+  etc.) if you use it for a single-file link like this.
+- **Drop the file locally.** Download `unraid-template.xml` and copy it
+  to `/boot/config/plugins/dockerMan/templates-user/immich-dlna-proxy.xml`
+  (reachable over the network as
+  `\\<tower>\flash\config\plugins\dockerMan\templates-user\`). Then open
+  **Add Container** and pick "immich-dlna-proxy" from the **"Select a
+  template"** dropdown. This reads the file straight off disk, so it
+  works even if the first method leaves the form blank.
+
+If **Add Container** ever loads with the Name/Repository/Icon fields
+filled in but none of the Config fields showing, that's the signature of
+the template URL having gone into the wrong box - re-add it with one of
+the two methods above rather than troubleshooting further.
 
 It pre-configures:
 
