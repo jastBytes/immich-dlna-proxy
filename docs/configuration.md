@@ -10,7 +10,8 @@ required is missing or malformed.
 | Variable | Required | Default | Description |
 |---|:---:|---|---|
 | `IMMICH_URL` | yes | – | Base URL of your Immich server, reachable from wherever the proxy runs, e.g. `http://192.168.1.10:2283`. No trailing slash needed. |
-| `IMMICH_API_KEY` | yes | – | Immich API key. Needs at least `album.read`, `asset.read`, `asset.download`, and `person.read` permissions. Create one under Immich → Account Settings → API Keys. `asset.download` is easy to miss - without it, albums/people browse fine but every photo fails to load (proxy logs `DownloadOriginal(...): unexpected status 403`). |
+| `IMMICH_API_KEY` | yes* | – | Immich API key. Needs at least `album.read`, `asset.read`, `asset.download`, and `person.read` permissions. Create one under Immich → Account Settings → API Keys. `asset.download` is easy to miss - without it, albums/people browse fine but every photo fails to load (proxy logs `DownloadOriginal(...): unexpected status 403`). *Not required if `IMMICH_API_KEYS` is set. |
+| `IMMICH_API_KEYS` | no | – | Comma-separated list of Immich API keys, for exposing more than one Immich user's library through the same proxy (e.g. one household sharing a single Immich server, each member with their own account). Takes precedence over `IMMICH_API_KEY` when set. Each key needs the same permissions as `IMMICH_API_KEY` above, plus no extra permission is needed for the proxy to look up the key's own account name (`GET /api/users/me`) - it uses that name to label the key's top-level folder. See [Multiple Immich accounts](architecture.md#multiple-immich-accounts). |
 | `LISTEN_ADDR` | no | `:8200` | `host:port` the HTTP part (description.xml, SOAP control, media streaming) binds to. |
 | `FRIENDLY_NAME` | no | `Immich Photos` | Name shown on TVs when they list available DLNA servers. |
 | `DEVICE_UUID` | no | fixed built-in default | Stable UUID identifying this device to DLNA clients. Set your own if you run more than one instance on the same network - every instance needs a distinct UUID or clients get confused about which is which. |
@@ -23,6 +24,25 @@ required is missing or malformed.
 `CACHE_MAX_MB` must parse as an integer; a non-numeric value fails
 startup with a clear error rather than silently falling back to a
 default.
+
+## Multiple Immich accounts
+
+Set `IMMICH_API_KEYS` to a comma-separated list of API keys to expose more
+than one Immich user's library through the same proxy - for example, one
+household sharing a single Immich server where each person has their own
+account:
+
+```bash
+export IMMICH_API_KEYS="key-for-alice,key-for-bob"
+```
+
+With more than one key configured, the proxy looks up each key's own
+account name from Immich at startup and gives each one its own top-level
+folder on the DLNA server, named after that account; "Albums" and "People"
+then appear one level down, inside each person's folder. With a single key
+(the default), browsing is unchanged - no extra folder level. See
+[Architecture → Multiple Immich accounts](architecture.md#multiple-immich-accounts)
+for how this maps onto DLNA's `ObjectID`s.
 
 ## Running locally (no Docker)
 

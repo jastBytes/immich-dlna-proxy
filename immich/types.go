@@ -64,3 +64,12 @@ type PeopleResponse struct {
 	Total  int      `json:"total"`
 	Hidden int      `json:"hidden"`
 }
+
+// User is the shape returned by GET /api/users/me - the account that owns
+// the API key used to authenticate. Used to label the top-level per-user
+// folder when more than one IMMICH_API_KEYS entry is configured.
+type User struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}

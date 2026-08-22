@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 
 	"github.com/jastBytes/immich-dlna-proxy/cache"
@@ -20,7 +21,13 @@ func main() {
 		log.Printf("Downscaling photos to max %dx%d", cfg.MaxWidth, cfg.MaxHeight)
 	}
 
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	users, err := buildUsers(cfg)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+	if len(users) > 1 {
+		log.Printf("%d Immich accounts configured - each gets its own top-level DLNA folder", len(users))
+	}
 
 	var diskCache *cache.Cache
 	if cfg.CacheDir != "" {
@@ -33,7 +40,7 @@ func main() {
 		log.Printf("Disk cache disabled (DISABLE_CACHE=true) - streaming directly from Immich every time")
 	}
 
-	server := dlna.NewServer(cfg, client, diskCache)
+	server := dlna.NewServer(cfg, users, diskCache)
 
 	go func() {
 		if err := server.ListenAndServe(); err != nil {
@@ -52,4 +59,35 @@ func ifaceOrAll(iface string) string {
 		return "all"
 	}
 	return iface
+}
+
+// buildUsers creates one immich.Client per configured API key. With a
+// single key (the common case), the account's display name is never
+// shown to DLNA clients (see browseUserScope in dlna/contentdirectory.go),
+// so it isn't worth an extra Immich call to fetch it. With more than one
+// key (IMMICH_API_KEYS), each account gets its own top-level DLNA folder
+// named after it, so its name is fetched from Immich up front - failing
+// startup with a clear error if that fails, same as any other
+// misconfiguration this proxy can detect early.
+func buildUsers(cfg *config.Config) ([]dlna.UserClient, error) {
+	users := make([]dlna.UserClient, len(cfg.APIKeys))
+	for i, key := range cfg.APIKeys {
+		client := immich.New(cfg.ImmichURL, key)
+		users[i] = dlna.UserClient{Client: client}
+
+		if len(cfg.APIKeys) == 1 {
+			continue
+		}
+		me, err := client.GetMyUser()
+		if err != nil {
+			return nil, fmt.Errorf("IMMICH_API_KEYS[%d]: fetching account name failed: %w", i, err)
+		}
+		name := me.Name
+		if name == "" {
+			name = me.Email
+		}
+		users[i].Name = name
+		log.Printf("Immich account %d: %s", i, name)
+	}
+	return users, nil
 }

@@ -85,7 +85,9 @@ issues a SOAP `Browse` action against `/ctl/ContentDirectory` with an
 `ObjectID` and a `BrowseFlag` (`BrowseDirectChildren` to list children,
 `BrowseMetadata` to describe the object itself). The root exposes two
 fixed folders, "Albums" and "People"; the proxy maps object IDs to
-Immich concepts like this:
+Immich concepts like this (this is the mapping for a single configured
+Immich account - see [Multiple Immich accounts](#multiple-immich-accounts)
+below for how it changes with `IMMICH_API_KEYS`):
 
 | ObjectID | Represents | `BrowseDirectChildren` returns |
 |---|---|---|
@@ -126,6 +128,36 @@ calls `BrowseMetadata` on root, and simply never calls
 `BrowseDirectChildren`" - a genuinely hard bug to spot without capturing
 a working reference implementation's wire traffic to diff against, since
 the response still looks like well-formed XML at a glance.
+
+### Multiple Immich accounts
+
+With a single `IMMICH_API_KEY` (the default), the table above is the whole
+`ObjectID` space. Setting `IMMICH_API_KEYS` to more than one key changes the
+root: instead of listing "Albums"/"People" directly, root now lists one
+container per configured account, `user:<idx>` (`idx` is the account's
+position in `IMMICH_API_KEYS`), titled with that account's own Immich
+display name (fetched via `GET /api/users/me` for each key at startup, in
+`main.go`'s `buildUsers` - this is also why a misconfigured/unauthorized
+key in `IMMICH_API_KEYS` fails startup immediately rather than silently
+producing an unlabeled folder). Browsing into `user:<idx>` then behaves
+exactly like the single-account root did, but every `ObjectID` underneath
+it carries a `user:<idx>:` prefix so a later `Browse` call knows which
+account's client to use - `user:0:albums`, `user:0:album:<id>`,
+`user:0:person:<id>`, `user:0:asset:<id>`, and so on. This is implemented
+by `browseUserScope` in `dlna/contentdirectory.go`, which is the entire
+single-account Browse implementation generalized over an injected
+`childPrefix`; `browseMultiUser` handles only the extra top layer
+(root and `user:<idx>`) and delegates into it once per account.
+
+Each photo's `<res>` URL is scoped the same way: with one account it's
+`/media/{assetID}` as always, but with multiple accounts it's
+`/media/{idx}/{assetID}`, so `dlna/server.go`'s media handler
+(`parseMediaPath`) knows which account's API key to download with - an
+asset ID alone isn't enough, since each account can only download assets
+it has permission to see. The disk cache is still keyed by asset ID alone
+(see [Caching](#caching)): Immich asset IDs are UUIDs, globally unique
+across every account on the same server, so no per-account cache
+namespacing is needed.
 
 `BrowseDirectChildren` honors `StartingIndex`/`RequestedCount` (see
 `page` in `dlna/contentdirectory.go`) - `RequestedCount` 0 means "no

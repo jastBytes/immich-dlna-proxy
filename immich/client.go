@@ -191,6 +191,29 @@ func (c *Client) searchMetadataAssets(filterField, id string) ([]Asset, error) {
 	}
 }
 
+// GetMyUser returns the account that owns this client's API key (via
+// GET /api/users/me) - used to label the top-level per-user folder when
+// more than one IMMICH_API_KEYS entry is configured.
+func (c *Client) GetMyUser() (*User, error) {
+	req, err := c.newRequest(http.MethodGet, "/api/users/me")
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("immich GetMyUser: unexpected status %s", resp.Status)
+	}
+	var user User
+	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
 // GetAsset returns metadata for a single asset (used to know its mime type
 // before streaming it, if the caller doesn't already have that from the
 // album listing).
