@@ -74,21 +74,29 @@ store, so the **Template** dropdown on the Add Container page (a plain
 `<select>` - you can't type or paste into it) won't list it until you've
 added it by one of these two methods:
 
-- **Drop the file locally (simplest, always works).** Download
-  `unraid-template.xml` and copy it to
+- **Drop the file locally (works on stock Unraid, no plugins needed).**
+  Either copy `unraid-template.xml` to
   `/boot/config/plugins/dockerMan/templates-user/immich-dlna-proxy.xml`
-  (reachable over the network as
-  `\\<tower>\flash\config\plugins\dockerMan\templates-user\`). Then open
-  **Docker tab → Add Container** and pick "immich-dlna-proxy" from the
-  **"Select a template"** dropdown - it now appears because Unraid scans
-  that folder to build the list. You'll need to re-download the file
-  manually if the template ever changes.
-- **Template Repositories (auto-updating).** Docker tab → scroll to the
-  bottom → **"Template Repositories"** box → add
+  over the network (reachable as
+  `\\<tower>\flash\config\plugins\dockerMan\templates-user\`), or run
+  this from the Unraid web terminal:
+  ```bash
+  mkdir -p /boot/config/plugins/dockerMan/templates-user
+  curl -o /boot/config/plugins/dockerMan/templates-user/immich-dlna-proxy.xml \
+    https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/unraid-template.xml
+  ```
+  Then open **Docker tab → Add Container** and reload the page - pick
+  "immich-dlna-proxy" from the **"Select a template"** dropdown, which
+  now lists it because Unraid scans that folder to build the list.
+  You'll need to re-run this if the template ever changes.
+- **Template Repositories (auto-updating, requires the Community
+  Applications plugin).** If you have CA installed, Docker tab → scroll
+  to the bottom → **"Template Repositories"** box → add
   `https://github.com/jastBytes/immich-dlna-proxy` → **Save**. Unraid
-  scans the repo for `.xml` templates and adds them to the dropdown;
-  it re-checks the repo periodically so template updates show up without
-  manual re-downloading.
+  scans the repo for `.xml` templates and adds them to the dropdown, and
+  re-checks the repo periodically so template updates show up without
+  manual re-downloading. Without CA, this box isn't present at all - use
+  the method above instead.
 
 Either way, once "immich-dlna-proxy" is selectable from the **"Select a
 template"** dropdown, choosing it should populate every field below
