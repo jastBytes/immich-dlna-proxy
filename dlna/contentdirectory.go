@@ -105,10 +105,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 
 	switch {
 	case objectID == "0" && args.BrowseFlag == "BrowseMetadata":
-		didl = wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, 2))
+		didl = wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, 3))
 		returned, total = 1, 1
 
-	case objectID == "0": // BrowseDirectChildren on root: fixed "Albums" / "People" folders
+	case objectID == "0": // BrowseDirectChildren on root: fixed "Albums" / "People" / "Timeline" folders
 		albums, err := s.immich.ListAlbums()
 		if err != nil {
 			log.Printf("ListAlbums failed: %v", err)
@@ -126,6 +126,10 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		fragments := []string{
 			buildContainer("albums", "0", "Albums", len(albums)),
 			buildContainer("people", "0", "People", namedPeople),
+			// childCount omitted (-1): an accurate count would mean
+			// paginating through every asset in the library just to
+			// render the root listing, which doesn't scale.
+			buildContainer("timeline", "0", "Timeline", -1),
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
@@ -191,6 +195,29 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			// GetPersonStatistics call per person, which doesn't scale for
 			// libraries with many tagged people.
 			b.WriteString(buildContainer("person:"+p.ID, "people", p.Name, -1))
+		}
+		didl = wrapDIDL(b.String())
+		returned = len(paged)
+
+	case objectID == "timeline" && args.BrowseFlag == "BrowseMetadata":
+		// childCount omitted (-1): see the root listing above for why.
+		didl = wrapDIDL(buildContainer("timeline", "0", "Timeline", -1))
+		returned, total = 1, 1
+
+	case objectID == "timeline": // BrowseDirectChildren: every photo, newest first
+		assets, err := s.immich.ListTimelineAssets()
+		if err != nil {
+			log.Printf("ListTimelineAssets failed: %v", err)
+			http.Error(w, "upstream error", http.StatusBadGateway)
+			return
+		}
+		photos := filterPhotos(assets)
+		total = len(photos)
+		paged := page(photos, args.StartingIndex, args.RequestedCount)
+		var b strings.Builder
+		for _, a := range paged {
+			resURL := baseURL + "/media/" + a.ID
+			b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
 		}
 		didl = wrapDIDL(b.String())
 		returned = len(paged)

@@ -2,9 +2,9 @@
 
 [![CI](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml)
 
-Exposes your Immich albums and named people (photos only, for now) as a
-DLNA MediaServer so older Smart TVs / DLNA clients can browse and display
-them without any extra app.
+Exposes your Immich albums, named people, and full photo timeline (photos
+only, for now) as a DLNA MediaServer so older Smart TVs / DLNA clients can
+browse and display them without any extra app.
 
 Written in Go, no external dependencies — just the standard library.
 
@@ -17,9 +17,10 @@ Written in Go, no external dependencies — just the standard library.
   it advertises) so TVs find it automatically.
 - **ContentDirectory (SOAP over HTTP)**: on `Browse`, calls the Immich API
   (`GET /api/albums`, `GET /api/albums/{id}`, `GET /api/people`,
-  `GET /api/people/{id}/assets`) and maps the root to two folders,
-  "Albums" and "People", each album/person to a DLNA *container*
-  (folder), and each photo asset to a DLNA *item*.
+  `GET /api/people/{id}/assets`, `POST /api/search/metadata`) and maps the
+  root to three folders, "Albums", "People", and "Timeline" (every photo,
+  newest first), each album/person to a DLNA *container* (folder), and
+  each photo asset to a DLNA *item*.
 - **X_MS_MediaReceiverRegistrar**: a Microsoft-defined UPnP extension some
   clients (Xbox, Windows Media Player, some Samsung firmwares) require to
   be present before they'll browse a server's content at all - the proxy
