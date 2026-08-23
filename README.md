@@ -124,7 +124,16 @@ Two GitHub Actions workflows live under `.github/workflows/`:
 
 - **`ci.yml`** - runs on every push/PR to `main`: `golangci-lint`,
   `gofmt` check, `go vet`, `go test -race`, cross-compile check for
-  linux/darwin × amd64/arm64, and a Dockerfile build check (not pushed).
+  linux/darwin × amd64/arm64, and a multi-arch Docker build. On PRs
+  opened from this repository (not forks - see below), the image is
+  pushed as `ghcr.io/jastBytes/immich-dlna-proxy:pr-<number>-dev` and
+  `:<commit-sha>-dev`. On every push to `main`, the image is pushed as
+  `:latest-preview`, `:<commit-sha>-preview`, and
+  `:<next-release-version>-preview` (the next version is resolved from
+  `.github/release-drafter.yml`'s `version-resolver` config, same as the
+  draft release). PRs from forks only get a build check (not pushed) -
+  the default `GITHUB_TOKEN` is read-only for fork PRs, so pushing would
+  fail there regardless.
 - **`release.yml`** - runs when you push a tag matching `v*.*.*`
   (e.g. `git tag v1.0.0 && git push --tags`):
   - re-runs the full CI suite first
@@ -133,10 +142,14 @@ Two GitHub Actions workflows live under `.github/workflows/`:
   - builds and pushes a multi-arch Docker image to
     `ghcr.io/jastBytes/immich-dlna-proxy:latest` and `:<version>`
 
-No extra setup needed beyond pushing the repo - both workflows use the
-automatically provided `GITHUB_TOKEN` (release creation + GHCR push are
-covered by the `contents: write` / `packages: write` permissions declared
-in `release.yml`).
+No extra setup needed beyond pushing the repo - all workflows use the
+automatically provided `GITHUB_TOKEN` (GHCR push is covered by the
+`packages: write` permission declared on the relevant jobs, release
+creation by `contents: write` in `release.yml`).
+
+Note: `-dev` and `-preview` images are never cleaned up automatically -
+they accumulate in GHCR over time. There's no retention/cleanup workflow
+for them yet.
 
 ## Known limitations / things to verify against your Immich version
 
