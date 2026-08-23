@@ -97,9 +97,10 @@ jobs:
           context: .
           push: false
 
-  # Builds and pushes a `-dev` tagged image for PRs from this repository
-  # (not forks - GITHUB_TOKEN is always read-only for fork PRs, so pushing
-  # would just fail there; docker-build-check above covers those instead).
+  # Builds and pushes an image to the -dev suffixed package for PRs from
+  # this repository (not forks - GITHUB_TOKEN is always read-only for
+  # fork PRs, so pushing would just fail there; docker-build-check above
+  # covers those instead).
   docker-publish-pr:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
@@ -127,7 +128,7 @@ jobs:
           repo_lower=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           short_sha=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
           {
-            echo "image=ghcr.io/${repo_lower}"
+            echo "image=ghcr.io/${repo_lower}-dev"
             echo "short_sha=${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
@@ -138,10 +139,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ steps.meta.outputs.image }}:pr-${{ github.event.pull_request.number }}-dev
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}-dev
+            ${{ steps.meta.outputs.image }}:pr-${{ github.event.pull_request.number }}
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
 
-  # Builds and pushes a `-preview` tagged image on every push to main.
+  # Builds and pushes an image to the -preview suffixed package on every
+  # push to main.
   docker-publish-main:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
@@ -191,7 +193,7 @@ jobs:
           repo_lower=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           short_sha=$(echo "${{ github.sha }}" | cut -c1-7)
           {
-            echo "image=ghcr.io/${repo_lower}"
+            echo "image=ghcr.io/${repo_lower}-preview"
             echo "short_sha=${short_sha}"
           } >> "$GITHUB_OUTPUT"
 
@@ -202,6 +204,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
-            ${{ steps.meta.outputs.image }}:latest-preview
-            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}-preview
-            ${{ steps.meta.outputs.image }}:${{ steps.version.outputs.resolved_version }}-preview
+            ${{ steps.meta.outputs.image }}:latest
+            ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
+            ${{ steps.meta.outputs.image }}:${{ steps.version.outputs.resolved_version }}
