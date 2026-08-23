@@ -36,7 +36,7 @@ CI to catch them.
 
 Pushing a `v*.*.*` tag triggers `.github/workflows/release.yml`, which
 re-runs CI, builds release archives, and publishes a multi-arch image to
-`ghcr.io/jastBytes/immich-dlna-proxy`. Not something to do casually.
+`ghcr.io/jastbytes/immich-dlna-proxy`. Not something to do casually.
 
 ## Architecture
 
