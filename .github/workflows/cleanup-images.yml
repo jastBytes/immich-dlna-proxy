@@ -17,38 +17,47 @@ permissions:
   packages: write
 
 jobs:
-  # Deletes the -dev image tags for a PR from this repository once it
-  # closes (merged or not). Fork PRs never get a -dev image pushed in the
-  # first place (see docker-publish-pr in ci.yml), so there's nothing to
-  # clean up for those.
+  # Deletes the image for a PR from this repository, from the -dev
+  # suffixed package, once the PR closes (merged or not). Fork PRs never
+  # get an image pushed there in the first place (see docker-publish-pr
+  # in ci.yml), so there's nothing to clean up for those.
   cleanup-pr-dev:
     runs-on: ubuntu-latest
     if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
     steps:
-      - name: Compute dev tags for this PR
-        id: tags
+      - name: Compute package/tags for this PR
+        id: meta
         run: |
           short_sha=$(echo "${{ github.event.pull_request.head.sha }}" | cut -c1-7)
-          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "package=${GITHUB_REPOSITORY#*/}-dev"
+            echo "short_sha=${short_sha}"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Delete dev images for this PR
+      - name: Delete dev image for this PR
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          delete-tags: "pr-${{ github.event.pull_request.number }}-dev,${{ steps.tags.outputs.short_sha }}-dev"
+          package: ${{ steps.meta.outputs.package }}
+          delete-tags: "pr-${{ github.event.pull_request.number }},${{ steps.meta.outputs.short_sha }}"
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
 
-  # Weekly sweep for -preview images, which otherwise accumulate forever:
-  # latest-preview just moves to the newest push, but the sha-preview and
-  # version-preview tags from every earlier push to main stay behind.
-  # Keeps the 10 newest, deletes the rest.
+  # Weekly sweep of the -preview suffixed package, which otherwise
+  # accumulates forever: `latest` just moves to the newest push, but the
+  # sha/version tags from every earlier push to main stay behind. Keeps
+  # the 10 newest, deletes the rest.
   cleanup-preview:
     runs-on: ubuntu-latest
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
+      - name: Compute package name
+        id: meta
+        run: echo "package=${GITHUB_REPOSITORY#*/}-preview" >> "$GITHUB_OUTPUT"
+
       - name: Delete old preview images, keep newest 10
         uses: dataaxiom/ghcr-cleanup-action@v1
         with:
-          delete-tags: "*-preview"
-          exclude-tags: "latest-preview"
+          package: ${{ steps.meta.outputs.package }}
+          delete-tags: "*"
+          exclude-tags: "latest"
           keep-n-tagged: 10
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
