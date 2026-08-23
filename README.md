@@ -75,6 +75,10 @@ export IMMICH_API_KEY=your-api-key
 go run .
 ```
 
+Or copy `.env.example` to `.env`, fill in your values, and run `make run`
+(`.env` is gitignored). See `make help` for other targets (`build`, `test`,
+`ci`, ...).
+
 ## Run in Docker (e.g. on your Unraid server, alongside Immich)
 
 ### Option A: pull the published image (after you've pushed a release tag)
