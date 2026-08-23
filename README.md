@@ -193,9 +193,7 @@ can only be done after the first `-dev`/`-preview` build has run once).
   untouched rather than dropped. The downscaler uses a simple box filter,
   not a high-quality resampling algorithm; it's fine for "smaller file
   for an old TV", not for archival-quality thumbnails.
-- Tested by compiling only (`go build`, `go vet`) in this environment —
-  not yet verified against a real TV or Immich instance. DLNA
-  compatibility varies a lot between TV brands (Samsung/LG/Sony each
+- DLNA compatibility varies a lot between TV brands (Samsung/LG/Sony each
   have their own quirks); expect to need some debugging with your
   specific TV. Tools like `python3 -m ssdp` or the "BubbleUPnP" Android
   app are useful for poking at the server independently of a TV.

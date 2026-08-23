@@ -115,17 +115,16 @@ ContentDirectory behavior, not something specific to this proxy. That
 escaping is done with a minimal escaper (`xmlTextEscape` in
 `dlna/contentdirectory.go`) that only handles `&`, `<`, `>` - not
 `html.EscapeString`, which also turns `"` into `&#34;`. That's valid XML,
-but some DLNA clients (confirmed via packet capture: Samsung's `SEC_HHP`
-stack, used across many TV generations) only undo `&lt;`/`&gt;`/`&amp;`
-before treating the result as raw XML rather than doing real entity
-decoding, so a `&#34;`-escaped quote breaks every attribute in the
-embedded DIDL-Lite (`id=&#34;0&#34;` isn't valid attribute syntax) and
-the client silently treats the container as unbrowsable. Get this wrong
-and the symptom is exactly "the client fetches the description fine,
-calls `BrowseMetadata` on root, and simply never calls
-`BrowseDirectChildren`" - a genuinely hard bug to spot without capturing
-a working reference implementation's wire traffic to diff against, since
-the response still looks like well-formed XML at a glance.
+but some DLNA clients (Samsung's `SEC_HHP` stack, used across many TV
+generations) only undo `&lt;`/`&gt;`/`&amp;` before treating the result
+as raw XML rather than doing real entity decoding, so a `&#34;`-escaped
+quote breaks every attribute in the embedded DIDL-Lite (`id=&#34;0&#34;`
+isn't valid attribute syntax) and the client silently treats the
+container as unbrowsable. The symptom is that the client fetches the
+description fine, calls `BrowseMetadata` on root, and simply never calls
+`BrowseDirectChildren` - worth knowing if you're chasing a similar
+"browses the root but nothing below it" report, since the response still
+looks like well-formed XML at a glance.
 
 `BrowseDirectChildren` honors `StartingIndex`/`RequestedCount` (see
 `page` in `dlna/contentdirectory.go`) - `RequestedCount` 0 means "no
@@ -147,9 +146,10 @@ Only the first recognized property in a comma-separated `SortCriteria`
 is honored; any other property is ignored, and an empty/unrecognized
 `SortCriteria` leaves Immich's own listing order untouched.
 
-A handful of other details turned out to matter for Samsung TVs
-specifically, verified by diffing wire traffic against a real minidlna
-instance on the same TV: the DIDL-Lite root element declares
+A handful of other details matter for Samsung TVs specifically (found by
+diffing wire traffic against a real minidlna instance on the same TV,
+which is a useful technique if you run into similar client-specific
+quirks): the DIDL-Lite root element declares
 `xmlns:sec="http://www.sec.co.kr/dlna"` (Samsung's own, unused-but-
 expected extension namespace) alongside the standard DIDL-Lite/dc/upnp/
 dlna namespaces; the root container carries an
