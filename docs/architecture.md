@@ -169,6 +169,24 @@ the TV to actually display the photo. It also includes an
 browsers like Home Assistant's list titles but show a placeholder icon
 instead of a thumbnail (they don't fall back to `<res>` for previews).
 
+Album and person `<container>` elements carry the same
+`<upnp:albumArtURI>` tag when a cover image is available, so folder
+views get a real thumbnail instead of a generic folder icon:
+
+- **Albums** reuse `albumThumbnailAssetId` from Immich's own album
+  response (`GET /api/albums` and `GET /api/albums/{id}`) - it's a
+  regular asset ID, so the URL is just `/media/<thumbnailAssetID>`, the
+  same endpoint photo items use. An album with no assets has no
+  thumbnail asset, so `albumArtURI` is omitted for it.
+- **People** don't have an asset-backed thumbnail; Immich instead serves
+  a generated face-crop image directly from
+  `GET /api/people/{id}/thumbnail`. The proxy fronts this at
+  `GET /media/person/{personID}` (`Server.handlePersonThumbnail` in
+  `dlna/server.go`, via `Client.GetPersonThumbnail`), cached under the
+  key `"person:<id>"` so it can never collide with an asset cached under
+  a plain asset ID. `albumArtURI` is omitted for a person with no
+  `thumbnailPath` (Immich hasn't generated a face crop for them yet).
+
 ## Media streaming
 
 `GET /media/{assetID}` is a plain (non-SOAP) HTTP endpoint that serves
@@ -210,6 +228,15 @@ differently depending on whether the disk cache is enabled (the default):
 - **Cache disabled** (`DISABLE_CACHE=true`): same download, orientation
   fix, and optional downscale as a cache miss above, but the result is
   served straight from memory instead of being written to disk.
+
+`GET /media/person/{personID}` is a sibling endpoint for person cover
+thumbnails (see [Container album art](#3-control-contentdirectory-browse)
+above). It shares the same cache-hit/cache-miss/cache-disabled flow -
+`Server.serveMedia` implements the common path for both handlers - except
+it fetches from `Client.GetPersonThumbnail` instead of
+`Client.DownloadOriginal`, and skips the orientation-fix/downscale step:
+Immich already generates person thumbnails as small, correctly-oriented
+face crops, so there's nothing to normalize.
 
 ## Orientation
 

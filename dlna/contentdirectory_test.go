@@ -117,16 +117,16 @@ func newTestServerWithFakeImmich(t *testing.T) (srvURL string) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/api/albums":
-			_, _ = w.Write([]byte(`[{"id":"album1","albumName":"Vacation","assetCount":1}]`))
+			_, _ = w.Write([]byte(`[{"id":"album1","albumName":"Vacation","assetCount":1,"albumThumbnailAssetId":"photo1"}]`))
 		case "/api/albums/album1":
-			_, _ = w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":1}`))
+			_, _ = w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":1,"albumThumbnailAssetId":"photo1"}`))
 		case "/api/people":
 			_, _ = w.Write([]byte(`{"total":2,"hidden":0,"people":[
-				{"id":"person1","name":"Alice","isHidden":false},
+				{"id":"person1","name":"Alice","isHidden":false,"thumbnailPath":"/thumbs/person1.jpg"},
 				{"id":"person2","name":"","isHidden":false}
 			]}`))
 		case "/api/people/person1":
-			_, _ = w.Write([]byte(`{"id":"person1","name":"Alice","isHidden":false}`))
+			_, _ = w.Write([]byte(`{"id":"person1","name":"Alice","isHidden":false,"thumbnailPath":"/thumbs/person1.jpg"}`))
 		case "/api/assets/photo1":
 			_, _ = w.Write([]byte(`{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}`))
 		case "/api/search/metadata":
@@ -229,6 +229,9 @@ func TestBrowseAlbumsListsAlbums(t *testing.T) {
 	if !strings.Contains(didl, "Vacation") {
 		t.Errorf("expected album title 'Vacation', got: %s", didl)
 	}
+	if !strings.Contains(didl, "<upnp:albumArtURI>"+ts+"/media/photo1</upnp:albumArtURI>") {
+		t.Errorf("expected albumArtURI pointing at the album's thumbnail asset, got: %s", didl)
+	}
 }
 
 func TestBrowsePeopleListsOnlyNamedPeople(t *testing.T) {
@@ -243,6 +246,9 @@ func TestBrowsePeopleListsOnlyNamedPeople(t *testing.T) {
 	}
 	if !strings.Contains(didl, "Alice") {
 		t.Errorf("expected person name 'Alice', got: %s", didl)
+	}
+	if !strings.Contains(didl, "<upnp:albumArtURI>"+ts+"/media/person/person1</upnp:albumArtURI>") {
+		t.Errorf("expected albumArtURI pointing at person1's thumbnail, got: %s", didl)
 	}
 }
 
@@ -267,6 +273,9 @@ func TestBrowseMetadataOnPersonReturnsItsOwnName(t *testing.T) {
 	}
 	if !strings.Contains(didl, "Alice") {
 		t.Errorf("expected name 'Alice' in metadata, got: %s", didl)
+	}
+	if !strings.Contains(didl, "<upnp:albumArtURI>"+ts+"/media/person/person1</upnp:albumArtURI>") {
+		t.Errorf("expected albumArtURI pointing at person1's thumbnail, got: %s", didl)
 	}
 }
 
@@ -303,6 +312,22 @@ func TestBrowseAlbumMetadataReturnsPhotoCount(t *testing.T) {
 	didl := didlResult(t, browse(t, ts, "album:album1", "BrowseMetadata"))
 	if !strings.Contains(didl, `id="album:album1"`) || !strings.Contains(didl, "Vacation") {
 		t.Errorf("expected album1 metadata, got: %s", didl)
+	}
+	if !strings.Contains(didl, "<upnp:albumArtURI>"+ts+"/media/photo1</upnp:albumArtURI>") {
+		t.Errorf("expected albumArtURI pointing at the album's thumbnail asset, got: %s", didl)
+	}
+}
+
+// TestBrowseAlbumsOmitsAlbumArtURIForEmptyAlbum covers an album with no
+// albumThumbnailAssetId (Immich leaves it empty for an album with no
+// assets) - the container should render with no albumArtURI at all
+// rather than a broken /media/ URL.
+func TestBrowseAlbumsOmitsAlbumArtURIForEmptyAlbum(t *testing.T) {
+	ts := newTestServerWithUnsortedFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "albums", "BrowseDirectChildren"))
+	if strings.Contains(didl, "albumArtURI") {
+		t.Errorf("expected no albumArtURI for albums without a thumbnail asset, got: %s", didl)
 	}
 }
 

@@ -32,6 +32,8 @@ Written in Go, no external dependencies — just the standard library.
   `/api/assets/{id}/original`, writes it to a disk cache, then serves it
   from there (with proper `Range`/`ETag` support via `http.ServeContent`).
   On a cache hit, it's served straight from disk - no Immich call at all.
+  `/media/person/{personID}` works the same way for person cover
+  thumbnails, backed by Immich's `/api/people/{id}/thumbnail`.
 
 ## Caching
 
@@ -197,8 +199,11 @@ can only be done after the first `-dev`/`-preview` build has run once).
   have their own quirks); expect to need some debugging with your
   specific TV. Tools like `python3 -m ssdp` or the "BubbleUPnP" Android
   app are useful for poking at the server independently of a TV.
-- Album covers/thumbnails for the folder view itself aren't implemented
-  (some DLNA clients show a folder icon; this is cosmetic).
+- Album and person folders advertise a cover thumbnail (`albumArtURI`) -
+  Immich's chosen album cover asset for albums, and the generated
+  face-crop thumbnail for people - but not every DLNA client renders
+  container-level cover art; some will still show a generic folder icon
+  even though the data is present. This is cosmetic.
 
 ## Security
 

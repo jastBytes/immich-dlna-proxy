@@ -58,3 +58,19 @@ func TestPersonIsNamed(t *testing.T) {
 		}
 	}
 }
+
+func TestPersonHasThumbnail(t *testing.T) {
+	cases := []struct {
+		thumbnailPath string
+		want          bool
+	}{
+		{"/thumbs/p1.jpg", true},
+		{"", false},
+	}
+	for _, c := range cases {
+		p := Person{ThumbnailPath: c.thumbnailPath}
+		if got := p.HasThumbnail(); got != c.want {
+			t.Errorf("Person{ThumbnailPath: %q}.HasThumbnail() = %v, want %v", c.thumbnailPath, got, c.want)
+		}
+	}
+}

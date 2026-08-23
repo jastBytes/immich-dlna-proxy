@@ -38,6 +38,7 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/X_MS_MediaReceiverRegistrar.xml", s.handleMediaReceiverRegistrarSCPD)
 	mux.HandleFunc("/ctl/X_MS_MediaReceiverRegistrar", s.handleMediaReceiverRegistrarControl)
 	mux.HandleFunc("/media/", s.handleMedia)
+	mux.HandleFunc("/media/person/", s.handlePersonThumbnail)
 
 	return loggingMiddleware(upnpHeadersMiddleware(mux))
 }
@@ -79,8 +80,48 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// We always buffer and decode the downloaded bytes - not just when
+	// resizing is configured - because normalizing EXIF orientation
+	// requires it too: most DLNA renderers ignore the orientation tag and
+	// show raw pixels, so a portrait photo tagged "rotate 90" needs the
+	// rotation baked into the pixels themselves to display upright.
+	s.serveMedia(w, r, assetID,
+		func() (io.ReadCloser, string, error) { return s.immich.DownloadOriginal(assetID) },
+		func(data []byte) []byte {
+			data = s.fixOrientation(assetID, data)
+			return s.maybeResize(assetID, data)
+		})
+}
+
+// handlePersonThumbnail serves a person's face-crop thumbnail, used as
+// the albumArtURI for their "People" container so DLNA clients that
+// render folder covers show a face instead of a generic folder icon.
+// Immich serves this as image bytes directly rather than via an asset
+// ID, so it goes through GetPersonThumbnail rather than DownloadOriginal
+// - but otherwise shares the same disk-cache-backed serving path as
+// handleMedia. It's cached under "person:<id>" so it can never collide
+// with an actual asset ID, and skips fixOrientation/maybeResize: Immich
+// already generates it as a small, correctly-oriented face crop.
+func (s *Server) handlePersonThumbnail(w http.ResponseWriter, r *http.Request) {
+	personID := strings.TrimPrefix(r.URL.Path, "/media/person/")
+	if personID == "" {
+		http.NotFound(w, r)
+		return
+	}
+
+	s.serveMedia(w, r, "person:"+personID,
+		func() (io.ReadCloser, string, error) { return s.immich.GetPersonThumbnail(personID) },
+		nil)
+}
+
+// serveMedia serves image bytes identified by cacheKey, using the disk
+// cache when enabled. On a cache miss, fetch downloads the original bytes
+// from Immich; transform (may be nil) is applied before the bytes are
+// cached and served - handleMedia uses it for EXIF-orientation fixing and
+// MAX_RESOLUTION downscaling, which don't apply to person thumbnails.
+func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey string, fetch func() (io.ReadCloser, string, error), transform func([]byte) []byte) {
 	if s.cache != nil {
-		if path, mimeType, modTime, ok := s.cache.Get(assetID); ok {
+		if path, mimeType, modTime, ok := s.cache.Get(cacheKey); ok {
 			f, err := os.Open(path)
 			if err != nil {
 				log.Printf("cache: open(%s) failed: %v", path, err)
@@ -89,46 +130,41 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 			}
 			defer func() { _ = f.Close() }()
 			w.Header().Set("Content-Type", mimeType)
-			http.ServeContent(w, r, assetID, modTime, f)
+			http.ServeContent(w, r, cacheKey, modTime, f)
 			return
 		}
 	}
 
-	// Cache miss (or caching disabled): download the full original from
-	// Immich. We always buffer and decode it - not just when resizing is
-	// configured - because normalizing EXIF orientation requires it too:
-	// most DLNA renderers ignore the orientation tag and show raw pixels,
-	// so a portrait photo tagged "rotate 90" needs the rotation baked into
-	// the pixels themselves to display upright.
-	body, mimeType, err := s.immich.DownloadOriginal(assetID)
+	body, mimeType, err := fetch()
 	if err != nil {
-		log.Printf("DownloadOriginal(%s) failed: %v", assetID, err)
+		log.Printf("fetch(%s) failed: %v", cacheKey, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
 	data, err := io.ReadAll(body)
 	_ = body.Close()
 	if err != nil {
-		log.Printf("DownloadOriginal(%s) read failed: %v", assetID, err)
+		log.Printf("fetch(%s) read failed: %v", cacheKey, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
 
-	data = s.fixOrientation(assetID, data)
-	data = s.maybeResize(assetID, data)
+	if transform != nil {
+		data = transform(data)
+	}
 
 	if s.cache == nil {
 		w.Header().Set("Content-Type", mimeType)
-		http.ServeContent(w, r, assetID, time.Now(), bytes.NewReader(data))
+		http.ServeContent(w, r, cacheKey, time.Now(), bytes.NewReader(data))
 		return
 	}
 
-	// Populate the cache with the (possibly rotated/downscaled) bytes,
-	// then serve it from disk - this also correctly answers any Range
-	// request the client made, via http.ServeContent.
-	path, err := s.cache.Put(assetID, mimeType, bytes.NewReader(data))
+	// Populate the cache with the (possibly transformed) bytes, then
+	// serve it from disk - this also correctly answers any Range request
+	// the client made, via http.ServeContent.
+	path, err := s.cache.Put(cacheKey, mimeType, bytes.NewReader(data))
 	if err != nil {
-		log.Printf("cache: put(%s) failed: %v", assetID, err)
+		log.Printf("cache: put(%s) failed: %v", cacheKey, err)
 		http.Error(w, "cache error", http.StatusInternalServerError)
 		return
 	}
@@ -146,7 +182,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", mimeType)
-	http.ServeContent(w, r, assetID, info.ModTime(), f)
+	http.ServeContent(w, r, cacheKey, info.ModTime(), f)
 }
 
 // fixOrientation normalizes EXIF orientation (see imageproc.FixOrientation)

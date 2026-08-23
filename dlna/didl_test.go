@@ -6,7 +6,7 @@ import (
 )
 
 func TestBuildContainerWithChildCount(t *testing.T) {
-	c := buildContainer("albums", "0", "Albums", 3)
+	c := buildContainer("albums", "0", "Albums", 3, "")
 	if !strings.Contains(c, `id="albums"`) || !strings.Contains(c, `parentID="0"`) {
 		t.Errorf("missing id/parentID: %s", c)
 	}
@@ -19,28 +19,28 @@ func TestBuildContainerWithChildCount(t *testing.T) {
 }
 
 func TestBuildContainerOmitsNegativeChildCount(t *testing.T) {
-	c := buildContainer("person:p1", "people", "Alice", -1)
+	c := buildContainer("person:p1", "people", "Alice", -1, "")
 	if strings.Contains(c, "childCount") {
 		t.Errorf("expected childCount attribute to be omitted for negative count, got: %s", c)
 	}
 }
 
 func TestBuildContainerRootIncludesSearchClass(t *testing.T) {
-	c := buildContainer("0", "-1", "Immich Photos", 2)
+	c := buildContainer("0", "-1", "Immich Photos", 2, "")
 	if !strings.Contains(c, `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>`) {
 		t.Errorf("expected root searchClass, got: %s", c)
 	}
 }
 
 func TestBuildContainerNonRootOmitsSearchClass(t *testing.T) {
-	c := buildContainer("albums", "0", "Albums", 3)
+	c := buildContainer("albums", "0", "Albums", 3, "")
 	if strings.Contains(c, "searchClass") {
 		t.Errorf("expected non-root container to omit searchClass, got: %s", c)
 	}
 }
 
 func TestBuildContainerIncludesSearchableAndStorageUsed(t *testing.T) {
-	c := buildContainer("albums", "0", "Albums", 3)
+	c := buildContainer("albums", "0", "Albums", 3, "")
 	if !strings.Contains(c, `searchable="1"`) {
 		t.Errorf("expected searchable attribute, got: %s", c)
 	}
@@ -50,12 +50,33 @@ func TestBuildContainerIncludesSearchableAndStorageUsed(t *testing.T) {
 }
 
 func TestBuildContainerEscapesTitle(t *testing.T) {
-	c := buildContainer("id", "0", `A & <B>`, 1)
+	c := buildContainer("id", "0", `A & <B>`, 1, "")
 	if strings.Contains(c, `A & <B>`) {
 		t.Errorf("title was not escaped: %s", c)
 	}
 	if !strings.Contains(c, "A &amp; &lt;B&gt;") {
 		t.Errorf("expected escaped title, got: %s", c)
+	}
+}
+
+func TestBuildContainerOmitsAlbumArtURIWhenEmpty(t *testing.T) {
+	c := buildContainer("album:a1", "albums", "Trip", 3, "")
+	if strings.Contains(c, "albumArtURI") {
+		t.Errorf("expected no albumArtURI element, got: %s", c)
+	}
+}
+
+func TestBuildContainerIncludesAlbumArtURI(t *testing.T) {
+	c := buildContainer("album:a1", "albums", "Trip", 3, "http://host/media/cover1")
+	if !strings.Contains(c, "<upnp:albumArtURI>http://host/media/cover1</upnp:albumArtURI>") {
+		t.Errorf("expected albumArtURI element, got: %s", c)
+	}
+}
+
+func TestBuildContainerEscapesAlbumArtURI(t *testing.T) {
+	c := buildContainer("album:a1", "albums", "Trip", 3, "http://host/media/cover1?x=1&y=2")
+	if !strings.Contains(c, "http://host/media/cover1?x=1&amp;y=2") {
+		t.Errorf("expected escaped albumArtURI, got: %s", c)
 	}
 }
 

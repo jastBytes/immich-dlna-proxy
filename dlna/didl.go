@@ -16,7 +16,15 @@ import (
 // upnp:searchClass for photo items - verified against a real minidlna
 // instance browsing successfully on a Samsung TV that got stuck forever
 // on BrowseMetadata against our earlier, sparser responses.
-func buildContainer(id, parentID, title string, childCount int) string {
+//
+// albumArtURI, if non-empty, is rendered as the container's cover image
+// (an album's thumbnail asset, or a person's face-crop thumbnail) - the
+// same reasoning as buildPhotoItem's albumArtURI: without it, DLNA
+// clients that render a folder view show a generic folder icon instead
+// of a cover, even though nothing about browsing the folder is broken.
+// Pass "" for containers with no natural cover (the root, and the
+// top-level "Albums"/"People" folders).
+func buildContainer(id, parentID, title string, childCount int, albumArtURI string) string {
 	childCountAttr := ""
 	if childCount >= 0 {
 		childCountAttr = fmt.Sprintf(` childCount="%d"`, childCount)
@@ -25,14 +33,19 @@ func buildContainer(id, parentID, title string, childCount int) string {
 	if id == "0" {
 		searchClass = `<upnp:searchClass includeDerived="1">object.item.imageItem</upnp:searchClass>`
 	}
+	albumArt := ""
+	if albumArtURI != "" {
+		albumArt = fmt.Sprintf(`<upnp:albumArtURI>%s</upnp:albumArtURI>`, html.EscapeString(albumArtURI))
+	}
 	return fmt.Sprintf(
 		`<container id="%s" parentID="%s" restricted="1" searchable="1"%s>`+
 			`%s`+
 			`<dc:title>%s</dc:title>`+
+			`%s`+
 			`<upnp:class>object.container.storageFolder</upnp:class>`+
 			`<upnp:storageUsed>-1</upnp:storageUsed>`+
 			`</container>`,
-		xmlAttrEscape(id), xmlAttrEscape(parentID), childCountAttr, searchClass, html.EscapeString(title),
+		xmlAttrEscape(id), xmlAttrEscape(parentID), childCountAttr, searchClass, html.EscapeString(title), albumArt,
 	)
 }
 

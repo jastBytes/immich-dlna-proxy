@@ -160,6 +160,64 @@ func TestGetPersonErrorStatus(t *testing.T) {
 	}
 }
 
+func TestGetPersonThumbnail(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/people/p1/thumbnail" {
+			t.Errorf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "image/webp")
+		_, _ = w.Write([]byte("face-crop-bytes"))
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	body, mimeType, err := client.GetPersonThumbnail("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	if mimeType != "image/webp" {
+		t.Errorf("mimeType = %q", mimeType)
+	}
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "face-crop-bytes" {
+		t.Errorf("body = %q", data)
+	}
+}
+
+func TestGetPersonThumbnailDefaultsMimeType(t *testing.T) {
+	client := New("http://immich.local", "test-key")
+	client.HTTP.Transport = stubRoundTripper{resp: &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{},
+		Body:       io.NopCloser(strings.NewReader("data")),
+	}}
+
+	body, mimeType, err := client.GetPersonThumbnail("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	if mimeType != "image/jpeg" {
+		t.Errorf("mimeType = %q, want default image/jpeg", mimeType)
+	}
+}
+
+func TestGetPersonThumbnailErrorStatus(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "test-key")
+	if _, _, err := client.GetPersonThumbnail("missing"); err == nil {
+		t.Fatal("expected error for non-200 status")
+	}
+}
+
 func TestGetPersonAssetsUsesPersonIdsFilter(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var reqBody struct {
