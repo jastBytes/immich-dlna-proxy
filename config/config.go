@@ -11,7 +11,8 @@ import (
 type Config struct {
 	// ImmichURL is the base URL of the Immich server, e.g. http://192.168.1.10:2283
 	ImmichURL string
-	// APIKey is an Immich API key with at least album.read / asset.read permissions.
+	// APIKey is an Immich API key with at least album.read / asset.read /
+	// asset.download / person.read permissions.
 	APIKey string
 	// ListenAddr is host:port the HTTP part of the DLNA server binds to, e.g. :8200
 	ListenAddr string
