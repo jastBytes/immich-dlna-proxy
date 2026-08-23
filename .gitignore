@@ -3,6 +3,8 @@ dist/
 *.test
 *.out
 
+.env
+
 .idea/
 .vscode/
 *.swp

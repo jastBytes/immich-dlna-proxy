@@ -25,6 +25,10 @@ export IMMICH_API_KEY=your-api-key
 go run .
 ```
 
+Or copy `.env.example` to `.env`, fill in your values, and run `make run`
+(`.env` is gitignored, so real credentials are safe to put there). `make ci`
+runs the same vet/fmt/test checks CI does; `make help` lists all targets.
+
 ## Before opening a PR
 
 - Run the commands above locally — CI runs the same checks and will fail
