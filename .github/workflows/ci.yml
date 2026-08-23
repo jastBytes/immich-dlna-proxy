@@ -147,7 +147,7 @@ jobs:
     if: github.event_name == 'push'
     needs: [lint, test]
     permissions:
-      contents: read
+      contents: write
       pull-requests: read
       packages: write
     steps:
@@ -164,9 +164,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # dry-run: true only resolves the next version per the repo's
-      # version-resolver config in .github/release-drafter.yml - it does
-      # not create/update the draft release (release-drafter.yml does that).
+      # dry-run: true stops the action from publishing a non-draft release,
+      # but it still calls the Releases API to create/update the draft
+      # (release-drafter.yml does the same on its own trigger) to compute
+      # resolved_version, so this job needs contents: write - with only
+      # contents: read the call 403s, the step fails, and resolved_version
+      # silently resolves to "" downstream, ending up as a `:-preview` tag.
       - name: Resolve next release version
         id: version
         uses: release-drafter/release-drafter@v6
@@ -174,6 +177,13 @@ jobs:
           dry-run: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify resolved version
+        run: |
+          if [ -z "${{ steps.version.outputs.resolved_version }}" ]; then
+            echo "::error::release-drafter did not return a resolved_version output - refusing to build a '-preview' image with an empty version tag" >&2
+            exit 1
+          fi
 
       - name: Compute image tags
         id: meta
