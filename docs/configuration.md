@@ -60,7 +60,7 @@ docker run -d \
   -e IMMICH_URL=http://192.168.1.10:2283 \
   -e IMMICH_API_KEY=your-api-key \
   -e FRIENDLY_NAME="Living Room Photos" \
-  ghcr.io/jastBytes/immich-dlna-proxy:latest
+  ghcr.io/jastbytes/immich-dlna-proxy:latest
 ```
 
 See the main [README](../README.md#run-in-docker) for the full pull vs.
@@ -76,7 +76,7 @@ Applications-style template you can add manually (Docker → Add Container
 It pre-configures:
 
 - **Network Type: Host** (required, see above)
-- **Repository:** `ghcr.io/jastBytes/immich-dlna-proxy:latest`
+- **Repository:** `ghcr.io/jastbytes/immich-dlna-proxy:latest`
 - **Cache path:** maps `/config/cache` inside the container to
   `/mnt/user/appdata/immich-dlna-proxy/cache` on the array by default -
   change this in the template's "Cache" field if you'd rather use a

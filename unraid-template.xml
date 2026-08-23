@@ -7,13 +7,13 @@
   <MyIP/>
   <Shell>sh</Shell>
   <Privileged>false</Privileged>
-  <Support>https://github.com/jastBytes/immich-dlna-proxy</Support>
-  <Project>https://github.com/jastBytes/immich-dlna-proxy</Project>
+  <Support>https://github.com/jastbytes/immich-dlna-proxy</Support>
+  <Project>https://github.com/jastbytes/immich-dlna-proxy</Project>
   <Overview>Exposes Immich albums and named people (photos only) as a DLNA MediaServer so Smart TVs can browse and display them without an extra app. Uses host networking because SSDP relies on UDP multicast, which does not traverse Docker's bridge network.</Overview>
   <Category>MediaApp:Photos Network:</Category>
   <WebUI/>
-  <TemplateURL>https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/jastBytes/immich-dlna-proxy/main/icon.svg</Icon>
+  <TemplateURL>https://raw.githubusercontent.com/jastbytes/immich-dlna-proxy/main/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/jastbytes/immich-dlna-proxy/main/icon.svg</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>

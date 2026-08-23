@@ -3,7 +3,7 @@
   <img alt="immich-dlna-proxy" src="assets/logo-light.svg" height="80">
 </picture>
 
-[![CI](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/jastBytes/immich-dlna-proxy/actions/workflows/ci.yml)
+[![CI](https://github.com/jastbytes/immich-dlna-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/jastbytes/immich-dlna-proxy/actions/workflows/ci.yml)
 
 Exposes your Immich albums and named people (photos only, for now) as a
 DLNA MediaServer so older Smart TVs / DLNA clients can browse and display
@@ -90,13 +90,11 @@ docker run -d \
   -e IMMICH_URL=http://192.168.1.10:2283 \
   -e IMMICH_API_KEY=your-api-key \
   -e FRIENDLY_NAME="Wohnzimmer Fotos" \
-  ghcr.io/jastBytes/immich-dlna-proxy:latest
+  ghcr.io/jastbytes/immich-dlna-proxy:latest
 ```
 
-By default, GHCR packages are private to your account/org. Make the
-package public (or set up a pull secret) so `docker run` on your Unraid
-box doesn't need authentication - see the package's Settings page on
-GitHub after the first successful release.
+The `immich-dlna-proxy` package is public, so `docker run` works without
+authentication.
 
 ### Option B: build locally
 
@@ -126,10 +124,10 @@ Several GitHub Actions workflows live under `.github/workflows/`:
   `gofmt` check, `go vet`, `go test -race`, cross-compile check for
   linux/darwin × amd64/arm64, and a multi-arch Docker build. On PRs
   opened from this repository (not forks - see below), the image is
-  pushed to the separate `ghcr.io/jastBytes/immich-dlna-proxy-dev`
+  pushed to the separate `ghcr.io/jastbytes/immich-dlna-proxy-dev`
   package, tagged `pr-<number>` and `<commit-sha>`. On every push to
   `main`, the image is pushed to the separate
-  `ghcr.io/jastBytes/immich-dlna-proxy-preview` package, tagged `latest`,
+  `ghcr.io/jastbytes/immich-dlna-proxy-preview` package, tagged `latest`,
   `<commit-sha>`, and `<next-release-version>` (the next version is
   resolved from `.github/release-drafter.yml`'s `version-resolver`
   config, same as the draft release). PRs from forks only get a build
@@ -141,7 +139,7 @@ Several GitHub Actions workflows live under `.github/workflows/`:
   - builds `.tar.gz` archives for linux/darwin × amd64/arm64, generates a
     `checksums.txt`, and attaches both to a new GitHub Release
   - builds and pushes a multi-arch Docker image to
-    `ghcr.io/jastBytes/immich-dlna-proxy:latest` and `:<version>`
+    `ghcr.io/jastbytes/immich-dlna-proxy:latest` and `:<version>`
 - **`cleanup-images.yml`** - keeps the `-dev`/`-preview` packages from
   piling up in GHCR indefinitely:
   - deletes a PR's image from the `-dev` package as soon as the PR
