@@ -120,7 +120,7 @@ the server.
 
 ## CI/CD
 
-Two GitHub Actions workflows live under `.github/workflows/`:
+Several GitHub Actions workflows live under `.github/workflows/`:
 
 - **`ci.yml`** - runs on every push/PR to `main`: `golangci-lint`,
   `gofmt` check, `go vet`, `go test -race`, cross-compile check for
@@ -141,11 +141,23 @@ Two GitHub Actions workflows live under `.github/workflows/`:
     `checksums.txt`, and attaches both to a new GitHub Release
   - builds and pushes a multi-arch Docker image to
     `ghcr.io/jastBytes/immich-dlna-proxy:latest` and `:<version>`
+- **`cleanup-images.yml`** - keeps the `-dev`/`-preview` images from
+  piling up in GHCR indefinitely:
+  - deletes a PR's `-dev` tags as soon as the PR closes (merged or not)
+  - weekly (and on manual `workflow_dispatch`), prunes `-preview` tags
+    down to the 10 newest, always keeping `latest-preview`
+  - `workflow_dispatch` takes a `dry_run` input to log what would be
+    deleted without actually deleting anything
 
-No extra setup needed beyond pushing the repo - all workflows use the
+Most workflows need no extra setup beyond pushing the repo - they use the
 automatically provided `GITHUB_TOKEN` (GHCR push is covered by the
 `packages: write` permission declared on the relevant jobs, release
-creation by `contents: write` in `release.yml`).
+creation by `contents: write` in `release.yml`). **`cleanup-images.yml`
+is the exception**: deleting package versions via the default
+`GITHUB_TOKEN` additionally requires granting this repository the
+**Admin** role under the `immich-dlna-proxy` package's own Settings ->
+"Manage Actions access" on GitHub (one-time, done once via the web UI -
+`packages: write` in the workflow alone isn't sufficient for deletes).
 
 Note: `-dev` and `-preview` images are never cleaned up automatically -
 they accumulate in GHCR over time. There's no retention/cleanup workflow
