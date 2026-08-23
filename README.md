@@ -11,7 +11,7 @@ them without any extra app.
 
 Written in Go, no external dependencies — just the standard library.
 
-📖 Detailed docs: [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md)
+📖 Detailed docs: [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [Contributing](CONTRIBUTING.md)
 
 ## How it works
 
@@ -35,22 +35,12 @@ Written in Go, no external dependencies — just the standard library.
 
 ## Caching
 
-Original photo bytes are cached on disk under `CACHE_DIR` (default
-`/config/cache`) so repeated views of the same photo don't hit Immich
-again. Album/asset/people *listings* (`Browse`) are **not** cached yet -
-only the
-image bytes behind `/media/{assetID}`.
-
-- Cache key is the asset ID; stored as `<assetID>` (bytes) +
-  `<assetID>.type` (MIME type sidecar).
-- "Last used" is approximated by the file's mtime, touched on every hit.
-- Once the cache exceeds `CACHE_MAX_MB`, a background sweep deletes the
-  least-recently-used files first until back under budget.
-- Set `DISABLE_CACHE=true` to fall back to the old behavior (always proxy
-  live from Immich, nothing written to disk).
-
-Only assets with `type == "IMAGE"` are shown; videos are skipped entirely
-for this first version.
+Original photo bytes are cached on disk under `CACHE_DIR` so repeated
+views of the same photo don't hit Immich again - only the image bytes
+behind `/media/{assetID}` are cached, not album/asset/people listings.
+See [Architecture → Caching](docs/architecture.md#caching) for cache
+keys and eviction, and [→ Media streaming](docs/architecture.md#media-streaming)
+for how `DISABLE_CACHE` changes this.
 
 ## Configuration (environment variables)
 
@@ -119,52 +109,6 @@ the "Host" network type in the container settings): SSDP relies on UDP
 multicast, which generally does not traverse Docker's default bridge
 network cleanly. Without host networking, TVs likely won't auto-discover
 the server.
-
-## CI/CD
-
-Several GitHub Actions workflows live under `.github/workflows/`:
-
-- **`ci.yml`** - runs on every push/PR to `main`: `golangci-lint`,
-  `gofmt` check, `go vet`, `go test -race`, cross-compile check for
-  linux/darwin × amd64/arm64, and a multi-arch Docker build. On PRs
-  opened from this repository (not forks - see below), the image is
-  pushed to the separate `ghcr.io/jastbytes/immich-dlna-proxy-dev`
-  package, tagged `pr-<number>` and `<commit-sha>`. On every push to
-  `main`, the image is pushed to the separate
-  `ghcr.io/jastbytes/immich-dlna-proxy-preview` package, tagged `latest`,
-  `<commit-sha>`, and `<next-release-version>` (the next version is
-  resolved from `.github/release-drafter.yml`'s `version-resolver`
-  config, same as the draft release). PRs from forks only get a build
-  check (not pushed) - the default `GITHUB_TOKEN` is read-only for fork
-  PRs, so pushing would fail there regardless.
-- **`release.yml`** - runs when you push a tag matching `v*.*.*`
-  (e.g. `git tag v1.0.0 && git push --tags`):
-  - re-runs the full CI suite first
-  - builds `.tar.gz` archives for linux/darwin × amd64/arm64, generates a
-    `checksums.txt`, and attaches both to a new GitHub Release
-  - builds and pushes a multi-arch Docker image to
-    `ghcr.io/jastbytes/immich-dlna-proxy:latest` and `:<version>`
-- **`cleanup-images.yml`** - keeps the `-dev`/`-preview` packages from
-  piling up in GHCR indefinitely:
-  - deletes a PR's image from the `-dev` package as soon as the PR
-    closes (merged or not)
-  - weekly (and on manual `workflow_dispatch`), prunes the `-preview`
-    package down to the 10 newest images, always keeping `latest`
-  - `workflow_dispatch` takes a `dry_run` input to log what would be
-    deleted without actually deleting anything
-
-Most workflows need no extra setup beyond pushing the repo - they use the
-automatically provided `GITHUB_TOKEN` (GHCR push is covered by the
-`packages: write` permission declared on the relevant jobs, release
-creation by `contents: write` in `release.yml`). **`cleanup-images.yml`
-is the exception**: deleting package versions via the default
-`GITHUB_TOKEN` additionally requires granting this repository the
-**Admin** role under both the `immich-dlna-proxy-dev` and
-`immich-dlna-proxy-preview` packages' own Settings -> "Manage Actions
-access" on GitHub (one-time per package, done via the web UI -
-`packages: write` in the workflow alone isn't sufficient for deletes;
-each package only exists once its first image has been pushed, so this
-can only be done after the first `-dev`/`-preview` build has run once).
 
 ## Known limitations / things to verify against your Immich version
 
