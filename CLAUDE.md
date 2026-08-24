@@ -94,8 +94,17 @@ also carries an `<upnp:albumArtURI>` pointing at the same `/media/{id}`
 URL — without it, some media browsers (e.g. Home Assistant) list titles
 but show a placeholder icon instead of a thumbnail.
 
+`album:<id>` and `person:<id>` **containers** carry `<upnp:albumArtURI>`
+too, when a cover is available: albums reuse Immich's
+`albumThumbnailAssetId` (a regular asset, so `/media/{id}` works as-is);
+people don't have an asset-backed thumbnail, so their cover comes from
+`GET /api/people/{id}/thumbnail` via `Client.GetPersonThumbnail`, fronted
+at `GET /media/person/{personID}` and cached under `"person:<id>"` to
+avoid colliding with the asset cache. Both are omitted (no
+`albumArtURI` element) when Immich has no cover to offer.
+
 Every `Browse` call hits Immich live; listings are never cached, only
-the image bytes behind `/media/{id}`.
+the image bytes behind `/media/{id}` and `/media/person/{id}`.
 
 **Media streaming** (`server.go`, `GET /media/{assetID}`): on cache hit,
 serves straight from `CACHE_DIR` via `http.ServeContent` (handles
@@ -103,7 +112,11 @@ serves straight from `CACHE_DIR` via `http.ServeContent` (handles
 *full* original from Immich regardless of any inbound `Range` header,
 writes it to disk (temp file + `os.Rename` for atomicity), then serves
 it. With `DISABLE_CACHE=true`, every request proxies live from Immich
-instead, forwarding `Range` as-is.
+instead, forwarding `Range` as-is. `GET /media/person/{personID}`
+(`handlePersonThumbnail`) shares this same cache/fetch/serve path
+(`Server.serveMedia`) but pulls from `Client.GetPersonThumbnail`
+(`/api/people/{id}/thumbnail`) instead, and skips orientation-fixing and
+downscaling since Immich's face-crop thumbnails need neither.
 
 **Cache** (`cache/cache.go`): each asset is two files — `<assetID>`
 (bytes) and `<assetID>.type` (MIME sidecar). "Last used" = file mtime,

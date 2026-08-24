@@ -105,7 +105,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 
 	switch {
 	case objectID == "0" && args.BrowseFlag == "BrowseMetadata":
-		didl = wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, 2))
+		didl = wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, 2, ""))
 		returned, total = 1, 1
 
 	case objectID == "0": // BrowseDirectChildren on root: fixed "Albums" / "People" folders
@@ -124,8 +124,8 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		namedPeople := countNamedPeople(people)
 
 		fragments := []string{
-			buildContainer("albums", "0", "Albums", len(albums)),
-			buildContainer("people", "0", "People", namedPeople),
+			buildContainer("albums", "0", "Albums", len(albums), ""),
+			buildContainer("people", "0", "People", namedPeople, ""),
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
@@ -139,7 +139,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		didl = wrapDIDL(buildContainer("albums", "0", "Albums", len(albums)))
+		didl = wrapDIDL(buildContainer("albums", "0", "Albums", len(albums), ""))
 		returned, total = 1, 1
 
 	case objectID == "albums": // BrowseDirectChildren: list albums
@@ -154,7 +154,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		paged := page(albums, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildContainer("album:"+a.ID, "albums", a.AlbumName, a.AssetCount))
+			b.WriteString(buildContainer("album:"+a.ID, "albums", a.AlbumName, a.AssetCount, albumArtURI(baseURL, a.AlbumThumbnailAssetID)))
 		}
 		didl = wrapDIDL(b.String())
 		returned = len(paged)
@@ -166,7 +166,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		didl = wrapDIDL(buildContainer("people", "0", "People", countNamedPeople(people)))
+		didl = wrapDIDL(buildContainer("people", "0", "People", countNamedPeople(people), ""))
 		returned, total = 1, 1
 
 	case objectID == "people": // BrowseDirectChildren: list named people
@@ -190,7 +190,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			// childCount omitted (-1): knowing it accurately would need one
 			// GetPersonStatistics call per person, which doesn't scale for
 			// libraries with many tagged people.
-			b.WriteString(buildContainer("person:"+p.ID, "people", p.Name, -1))
+			b.WriteString(buildContainer("person:"+p.ID, "people", p.Name, -1, personArtURI(baseURL, p)))
 		}
 		didl = wrapDIDL(b.String())
 		returned = len(paged)
@@ -212,7 +212,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		photos := filterPhotos(assets)
 
 		if args.BrowseFlag == "BrowseMetadata" {
-			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos)))
+			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos), albumArtURI(baseURL, album.AlbumThumbnailAssetID)))
 			returned, total = 1, 1
 		} else {
 			sortPhotos(photos, parseSortCriteria(args.SortCriteria))
@@ -237,7 +237,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				http.Error(w, "upstream error", http.StatusBadGateway)
 				return
 			}
-			didl = wrapDIDL(buildContainer(objectID, "people", person.Name, -1))
+			didl = wrapDIDL(buildContainer(objectID, "people", person.Name, -1, personArtURI(baseURL, *person)))
 			returned, total = 1, 1
 		} else {
 			assets, err := s.immich.GetPersonAssets(personID)
@@ -384,6 +384,30 @@ func filterPhotos(assets []immich.Asset) []immich.Asset {
 		}
 	}
 	return photos
+}
+
+// albumArtURI builds the cover URL for an album container from its
+// thumbnail asset ID, reusing the same /media/{id} endpoint photo items
+// use - Immich's album thumbnail is just a regular asset. Returns "" for
+// an empty album (no thumbnail asset), which buildContainer treats as
+// "no cover".
+func albumArtURI(baseURL, thumbnailAssetID string) string {
+	if thumbnailAssetID == "" {
+		return ""
+	}
+	return baseURL + "/media/" + thumbnailAssetID
+}
+
+// personArtURI builds the cover URL for a person container, if Immich has
+// a face-crop thumbnail for them. Unlike albums, a person's thumbnail
+// isn't a regular asset, so it's served from a dedicated
+// /media/person/{id} endpoint (see Server.handlePersonThumbnail) backed
+// by Client.GetPersonThumbnail.
+func personArtURI(baseURL string, p immich.Person) string {
+	if !p.HasThumbnail() {
+		return ""
+	}
+	return baseURL + "/media/person/" + p.ID
 }
 
 func countNamedPeople(people []immich.Person) int {

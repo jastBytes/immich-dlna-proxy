@@ -9,6 +9,12 @@ type Album struct {
 	ID         string `json:"id"`
 	AlbumName  string `json:"albumName"`
 	AssetCount int    `json:"assetCount"`
+	// AlbumThumbnailAssetID is the ID of the asset Immich uses as the
+	// album's cover photo (user-selected, or the most recent asset by
+	// default). Empty for an empty album. Reused directly as a
+	// /media/{id} URL for the album container's albumArtURI - no
+	// separate thumbnail endpoint needed, unlike people.
+	AlbumThumbnailAssetID string `json:"albumThumbnailAssetId"`
 }
 
 // Asset is a single photo/video entry.
@@ -44,10 +50,21 @@ func (a Asset) CapturedAt() time.Time {
 
 // Person is one entry from GET /api/people (a named face cluster).
 type Person struct {
-	ID            string `json:"id"`
-	Name          string `json:"name"`
-	IsHidden      bool   `json:"isHidden"`
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	IsHidden bool   `json:"isHidden"`
+	// ThumbnailPath is an Immich-internal file path, not a URL this proxy
+	// can fetch directly - it's only used here as a presence check for
+	// "does this person have a face-crop thumbnail at all". The actual
+	// image comes from GET /api/people/{id}/thumbnail (see
+	// Client.GetPersonThumbnail).
 	ThumbnailPath string `json:"thumbnailPath"`
+}
+
+// HasThumbnail reports whether Immich has a face-crop thumbnail for this
+// person, fetchable via Client.GetPersonThumbnail.
+func (p Person) HasThumbnail() bool {
+	return p.ThumbnailPath != ""
 }
 
 // IsNamed reports whether this person has been given a name. Immich

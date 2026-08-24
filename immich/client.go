@@ -140,6 +140,31 @@ func (c *Client) GetPersonAssets(personID string) ([]Asset, error) {
 	return c.searchMetadataAssets("personIds", personID)
 }
 
+// GetPersonThumbnail fetches the person's face-crop thumbnail image, used
+// as the person container's albumArtURI. Unlike DownloadOriginal, Immich
+// serves this directly as image bytes rather than via an asset ID - there
+// is no corresponding Asset to look up.
+func (c *Client) GetPersonThumbnail(personID string) (body io.ReadCloser, mimeType string, err error) {
+	req, err := c.newRequest(http.MethodGet, "/api/people/"+personID+"/thumbnail")
+	if err != nil {
+		return nil, "", err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, "", fmt.Errorf("immich GetPersonThumbnail(%s): unexpected status %s", personID, resp.Status)
+	}
+
+	mimeType = resp.Header.Get("Content-Type")
+	if mimeType == "" {
+		mimeType = "image/jpeg"
+	}
+	return resp.Body, mimeType, nil
+}
+
 // searchMetadataAssets fetches every asset matching a single-value filter
 // (e.g. albumIds/personIds) via POST /api/search/metadata, following
 // "nextPage" until the server stops returning one.

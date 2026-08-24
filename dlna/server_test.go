@@ -276,6 +276,141 @@ func TestMediaHandlerCacheMissDownloadErrorReturnsBadGateway(t *testing.T) {
 	}
 }
 
+func TestPersonThumbnailHandlerCachesAfterFirstRequest(t *testing.T) {
+	var immichHits int
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/people/p1/thumbnail" {
+			immichHits++
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("fake-face-crop"))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer fakeImmich.Close()
+
+	dir := t.TempDir()
+	c, err := cache.New(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, c)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(ts.URL + "/media/person/p1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if string(body) != "fake-face-crop" {
+			t.Fatalf("request %d: unexpected body %q", i, body)
+		}
+		if ct := resp.Header.Get("Content-Type"); ct != "image/jpeg" {
+			t.Fatalf("request %d: unexpected content-type %q", i, ct)
+		}
+	}
+
+	if immichHits != 1 {
+		t.Fatalf("expected exactly 1 upstream hit (2nd request should be served from cache), got %d", immichHits)
+	}
+}
+
+func TestPersonThumbnailHandlerDoesNotCollideWithAssetCache(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/assets/p1/original":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("asset-bytes"))
+		case "/api/people/p1/thumbnail":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("thumbnail-bytes"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fakeImmich.Close()
+
+	dir := t.TempDir()
+	c, err := cache.New(dir, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, c)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// A photo asset and a person can share the same ID (they're separate
+	// Immich ID namespaces) - the two endpoints must not serve each
+	// other's cached bytes.
+	assetResp, err := http.Get(ts.URL + "/media/p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assetBody, _ := io.ReadAll(assetResp.Body)
+	_ = assetResp.Body.Close()
+	if string(assetBody) != "asset-bytes" {
+		t.Fatalf("asset body = %q, want %q", assetBody, "asset-bytes")
+	}
+
+	thumbResp, err := http.Get(ts.URL + "/media/person/p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	thumbBody, _ := io.ReadAll(thumbResp.Body)
+	_ = thumbResp.Body.Close()
+	if string(thumbBody) != "thumbnail-bytes" {
+		t.Fatalf("thumbnail body = %q, want %q", thumbBody, "thumbnail-bytes")
+	}
+}
+
+func TestPersonThumbnailHandlerEmptyPersonIDReturns404(t *testing.T) {
+	cfg := &config.Config{ImmichURL: "http://immich.local", APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/media/person/", nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestPersonThumbnailHandlerUpstreamErrorReturnsBadGateway(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	resp, err := http.Get(ts.URL + "/media/person/missing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+}
+
 // makeExifJPEG builds a JPEG with a synthetic APP1/Exif segment carrying
 // just the orientation tag, so tests don't need a real camera file on disk.
 func makeExifJPEG(t *testing.T, w, h, orientation int) []byte {
