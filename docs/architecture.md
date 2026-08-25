@@ -238,6 +238,21 @@ it fetches from `Client.GetPersonThumbnail` instead of
 Immich already generates person thumbnails as small, correctly-oriented
 face crops, so there's nothing to normalize.
 
+### Bounding concurrent Immich fetches
+
+A TV rapidly scrolling through a large album fires off a `/media/{id}`
+request per thumbnail it renders; if most of those are cache misses (a
+first browse, or `DISABLE_CACHE=true`), that's a burst of simultaneous
+downloads that can overwhelm Immich. `Server.fetchSem`
+(`dlna/server.go`), a buffered channel sized by `MEDIA_FETCH_CONCURRENCY`
+(default 4), caps how many of those cache-miss fetches run at once - only
+the section of `serveMedia` between the cache-hit check and the
+Immich request/response acquires a slot, so browsing an already-cached
+album stays unthrottled. A request that can't get a slot within 30s
+(`fetchQueueTimeout`) gives up and responds `503` rather than queuing
+indefinitely or piling onto Immich once a slot frees up long after the TV
+has moved on.
+
 ## Orientation
 
 Every JPEG is checked for an EXIF orientation tag (`imageproc/orientation.go`)

@@ -9,7 +9,7 @@ func clearConfigEnv(t *testing.T) {
 	for _, k := range []string{
 		"IMMICH_URL", "IMMICH_API_KEY", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
-		"CACHE_MAX_MB", "MAX_RESOLUTION",
+		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY",
 	} {
 		t.Setenv(k, "")
 	}
@@ -71,6 +71,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxWidth != 0 || cfg.MaxHeight != 0 {
 		t.Errorf("MaxWidth/MaxHeight default = %dx%d, want 0x0", cfg.MaxWidth, cfg.MaxHeight)
 	}
+	if cfg.MediaFetchConcurrency != 4 {
+		t.Errorf("MediaFetchConcurrency default = %d, want 4", cfg.MediaFetchConcurrency)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -84,6 +87,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("CACHE_DIR", "/custom/cache")
 	t.Setenv("CACHE_MAX_MB", "100")
 	t.Setenv("MAX_RESOLUTION", "1920x1080")
+	t.Setenv("MEDIA_FETCH_CONCURRENCY", "8")
 
 	cfg, err := Load()
 	if err != nil {
@@ -109,6 +113,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.MaxWidth != 1920 || cfg.MaxHeight != 1080 {
 		t.Errorf("MaxWidth/MaxHeight = %dx%d, want 1920x1080", cfg.MaxWidth, cfg.MaxHeight)
+	}
+	if cfg.MediaFetchConcurrency != 8 {
+		t.Errorf("MediaFetchConcurrency = %d, want 8", cfg.MediaFetchConcurrency)
 	}
 }
 
@@ -149,6 +156,22 @@ func TestLoadInvalidMaxResolution(t *testing.T) {
 	_, err := Load()
 	if err == nil {
 		t.Fatal("expected error for invalid MAX_RESOLUTION")
+	}
+}
+
+func TestLoadInvalidMediaFetchConcurrency(t *testing.T) {
+	cases := []string{"not-a-number", "0", "-1"}
+	for _, v := range cases {
+		t.Run(v, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("IMMICH_URL", "http://immich.local")
+			t.Setenv("IMMICH_API_KEY", "key")
+			t.Setenv("MEDIA_FETCH_CONCURRENCY", v)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected error for MEDIA_FETCH_CONCURRENCY=%q", v)
+			}
+		})
 	}
 }
 

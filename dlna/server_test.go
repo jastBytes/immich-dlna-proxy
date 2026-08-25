@@ -9,7 +9,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/jastBytes/immich-dlna-proxy/cache"
 	"github.com/jastBytes/immich-dlna-proxy/config"
@@ -409,6 +412,115 @@ func TestPersonThumbnailHandlerUpstreamErrorReturnsBadGateway(t *testing.T) {
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
 	}
+}
+
+// TestMediaHandlerLimitsConcurrentImmichFetches verifies that with
+// MediaFetchConcurrency=1, a second cache-miss request for a different
+// asset waits for the first to finish instead of hitting Immich at the
+// same time - the core protection against a TV rapidly scrolling through
+// a large album and firing off many simultaneous downloads.
+func TestMediaHandlerLimitsConcurrentImmichFetches(t *testing.T) {
+	release := make(chan struct{})
+	var inFlight int32
+	var maxInFlight int32
+
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := atomic.AddInt32(&inFlight, 1)
+		for {
+			old := atomic.LoadInt32(&maxInFlight)
+			if n <= old || atomic.CompareAndSwapInt32(&maxInFlight, old, n) {
+				break
+			}
+		}
+		<-release
+		atomic.AddInt32(&inFlight, -1)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake-jpeg-bytes"))
+	}))
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", MediaFetchConcurrency: 1}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	var wg sync.WaitGroup
+	for _, id := range []string{"a1", "a2"} {
+		wg.Add(1)
+		go func(id string) {
+			defer wg.Done()
+			resp, err := http.Get(ts.URL + "/media/" + id)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}(id)
+	}
+
+	// Give both requests time to reach the handler (or queue for a slot),
+	// then let the fake Immich server proceed.
+	time.Sleep(200 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if maxInFlight != 1 {
+		t.Fatalf("max concurrent Immich fetches = %d, want 1 (MediaFetchConcurrency=1)", maxInFlight)
+	}
+}
+
+// TestMediaHandlerQueueTimeoutReturns503 verifies a request that can't get
+// a free Immich-fetch slot within fetchQueueTimeout gets a 503 rather than
+// hanging or piling onto Immich.
+func TestMediaHandlerQueueTimeoutReturns503(t *testing.T) {
+	origTimeout := fetchQueueTimeout
+	fetchQueueTimeout = 100 * time.Millisecond
+	defer func() { fetchQueueTimeout = origTimeout }()
+
+	release := make(chan struct{})
+
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-release
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("fake-jpeg-bytes"))
+	}))
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", MediaFetchConcurrency: 1}
+	client := immich.New(cfg.ImmichURL, cfg.APIKey)
+	srv := NewServer(cfg, client, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	// Occupy the single slot with a request that won't complete until
+	// released below, so the second request has to wait for a slot.
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		resp, err := http.Get(ts.URL + "/media/busy")
+		if err == nil {
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+		}
+	}()
+	time.Sleep(50 * time.Millisecond)
+
+	resp, err := http.Get(ts.URL + "/media/queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", resp.StatusCode)
+	}
+
+	close(release)
+	wg.Wait()
 }
 
 // makeExifJPEG builds a JPEG with a synthetic APP1/Exif segment carrying
