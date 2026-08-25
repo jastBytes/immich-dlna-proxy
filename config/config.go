@@ -38,6 +38,13 @@ type Config struct {
 	// MAX_RESOLUTION="WIDTHxHEIGHT", e.g. "1920x1080".
 	MaxWidth  int
 	MaxHeight int
+
+	// MediaFetchConcurrency caps how many /media/* requests may be
+	// downloading from Immich at once; additional requests queue for a
+	// free slot instead of firing off another concurrent Immich request.
+	// This keeps a TV rapidly scrolling through a large album from
+	// hammering Immich with dozens of simultaneous downloads.
+	MediaFetchConcurrency int
 }
 
 func Load() (*Config, error) {
@@ -74,6 +81,13 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.MaxWidth, cfg.MaxHeight = maxW, maxH
+
+	concurrency := getEnvDefault("MEDIA_FETCH_CONCURRENCY", "4")
+	n, err := strconv.Atoi(concurrency)
+	if err != nil || n <= 0 {
+		return nil, fmt.Errorf("MEDIA_FETCH_CONCURRENCY must be a positive integer, got %q", concurrency)
+	}
+	cfg.MediaFetchConcurrency = n
 
 	return cfg, nil
 }

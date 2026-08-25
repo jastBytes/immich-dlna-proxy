@@ -15,14 +15,32 @@ import (
 	"github.com/jastBytes/immich-dlna-proxy/immich"
 )
 
+// fetchQueueTimeout bounds how long a /media/* request will wait for a
+// free Immich-fetch slot (see Server.fetchSem) before giving up. Matches
+// immich.Client's own HTTP timeout, so a request that does get a slot
+// still can't hang indefinitely. A var rather than a const so tests can
+// shrink it instead of waiting out the real 30s.
+var fetchQueueTimeout = 30 * time.Second
+
 type Server struct {
 	cfg    *config.Config
 	immich *immich.Client
 	cache  *cache.Cache // nil if caching is disabled
+
+	// fetchSem bounds how many /media/* requests may be downloading from
+	// Immich at once. A TV rapidly scrolling through a large album can
+	// otherwise fire off dozens of concurrent thumbnail requests, each a
+	// cache miss, and overwhelm Immich; requests beyond the limit queue
+	// for a free slot instead, up to fetchQueueTimeout.
+	fetchSem chan struct{}
 }
 
 func NewServer(cfg *config.Config, client *immich.Client, c *cache.Cache) *Server {
-	return &Server{cfg: cfg, immich: client, cache: c}
+	concurrency := cfg.MediaFetchConcurrency
+	if concurrency <= 0 {
+		concurrency = 4
+	}
+	return &Server{cfg: cfg, immich: client, cache: c, fetchSem: make(chan struct{}, concurrency)}
 }
 
 func (s *Server) Mux() http.Handler {
@@ -133,6 +151,21 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 			http.ServeContent(w, r, cacheKey, modTime, f)
 			return
 		}
+	}
+
+	// Queue for a free Immich-fetch slot rather than firing off another
+	// concurrent download - see fetchSem's doc comment. Cache hits above
+	// never reach this point, so browsing an already-cached album stays
+	// unthrottled.
+	select {
+	case s.fetchSem <- struct{}{}:
+		defer func() { <-s.fetchSem }()
+	case <-time.After(fetchQueueTimeout):
+		log.Printf("fetch(%s): timed out after %s waiting for a free Immich fetch slot", cacheKey, fetchQueueTimeout)
+		http.Error(w, "server busy, try again", http.StatusServiceUnavailable)
+		return
+	case <-r.Context().Done():
+		return
 	}
 
 	body, mimeType, err := fetch()
