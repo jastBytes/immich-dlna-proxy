@@ -118,6 +118,13 @@ instead, forwarding `Range` as-is. `GET /media/person/{personID}`
 (`/api/people/{id}/thumbnail`) instead, and skips orientation-fixing and
 downscaling since Immich's face-crop thumbnails need neither.
 
+On a cache miss, `serveMedia` acquires a slot from `Server.fetchSem` (a
+buffered channel sized by `MEDIA_FETCH_CONCURRENCY`, default 4) before
+calling Immich, so a TV rapidly scrolling through a large album can't
+fire off unbounded concurrent downloads; a request that can't get a slot
+within 30s (`fetchQueueTimeout`) gives up with `503` instead of queuing
+indefinitely. Cache hits never touch this queue.
+
 **Cache** (`cache/cache.go`): each asset is two files — `<assetID>`
 (bytes) and `<assetID>.type` (MIME sidecar). "Last used" = file mtime,
 touched on every hit via `os.Chtimes`. After each write, a background

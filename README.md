@@ -58,6 +58,7 @@ for how `DISABLE_CACHE` changes this.
 | `CACHE_MAX_MB`     | no       | `2048`           | Soft size budget in MB before LRU eviction kicks in |
 | `DISABLE_CACHE`    | no       | `false`          | Set to `true` to disable caching entirely       |
 | `MAX_RESOLUTION`   | no       | (unset = disabled) | Downscale photos larger than this to fit, e.g. `1920x1080`. Aspect ratio is preserved; smaller images are left untouched. |
+| `MEDIA_FETCH_CONCURRENCY` | no | `4`         | Max photos allowed to download from Immich at once; extra requests queue for a free slot (giving up after 30s) instead of piling onto Immich |
 
 ## Run locally
 
