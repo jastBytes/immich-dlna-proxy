@@ -8,6 +8,15 @@ on:
 permissions:
   contents: write
   packages: write
+  # ci.yml's docker-publish-main job (unreachable here in practice, since
+  # it only runs on event_name == 'push', but its permissions are
+  # validated at workflow-call startup regardless of that condition)
+  # requests pull-requests: read for release-drafter. Reusable workflows
+  # cannot request a scope the caller doesn't grant at all - an absent
+  # scope is treated as "none", not "unopinionated" - so it must be
+  # declared here too or the whole run fails with startup_failure before
+  # any job runs.
+  pull-requests: read
 
 jobs:
   test:
