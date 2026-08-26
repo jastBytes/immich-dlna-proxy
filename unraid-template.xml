@@ -13,7 +13,7 @@
   <Category>MediaApp:Photos Network:</Category>
   <WebUI/>
   <TemplateURL>https://raw.githubusercontent.com/jastbytes/immich-dlna-proxy/main/unraid-template.xml</TemplateURL>
-  <Icon>https://raw.githubusercontent.com/jastbytes/immich-dlna-proxy/main/icon.svg</Icon>
+  <Icon>https://github.com/jastBytes/immich-dlna-proxy/blob/main/dlna/icons/icon48.png?raw=true</Icon>
   <ExtraParams/>
   <PostArgs/>
   <CPUset/>
