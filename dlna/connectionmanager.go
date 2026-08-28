@@ -37,8 +37,9 @@ func (s *Server) handleConnectionManagerControl(w http.ResponseWriter, r *http.R
 	switch {
 	case env.Body.GetProtocolInfo != nil:
 		writeSoapResponse(w, cmNS, "GetProtocolInfoResponse", map[string]string{
-			"Source": "http-get:*:image/jpeg:*,http-get:*:image/png:*,http-get:*:image/gif:*",
-			"Sink":   "",
+			"Source": "http-get:*:image/jpeg:*,http-get:*:image/png:*,http-get:*:image/gif:*," +
+				"http-get:*:video/mp4:*,http-get:*:video/quicktime:*,http-get:*:video/x-matroska:*,http-get:*:video/x-msvideo:*",
+			"Sink": "",
 		})
 	case env.Body.GetCurrentConnectionIDs != nil:
 		writeSoapResponse(w, cmNS, "GetCurrentConnectionIDsResponse", map[string]string{

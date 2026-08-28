@@ -204,21 +204,20 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		didl = wrapDIDL(buildContainer("timeline", "0", "Timeline", -1, ""))
 		returned, total = 1, 1
 
-	case objectID == "timeline": // BrowseDirectChildren: every photo, newest first
+	case objectID == "timeline": // BrowseDirectChildren: every photo/video, newest first
 		assets, err := s.immich.ListTimelineAssets()
 		if err != nil {
 			log.Printf("ListTimelineAssets failed: %v", err)
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		photos := filterPhotos(assets)
-		sortPhotos(photos, parseSortCriteria(args.SortCriteria))
-		total = len(photos)
-		paged := page(photos, args.StartingIndex, args.RequestedCount)
+		media := filterSupportedAssets(assets)
+		sortPhotos(media, parseSortCriteria(args.SortCriteria))
+		total = len(media)
+		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			resURL := baseURL + "/media/" + a.ID
-			b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
+			b.WriteString(buildAssetItem(baseURL, objectID, a))
 		}
 		didl = wrapDIDL(b.String())
 		returned = len(paged)
@@ -237,19 +236,18 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		photos := filterPhotos(assets)
+		media := filterSupportedAssets(assets)
 
 		if args.BrowseFlag == "BrowseMetadata" {
-			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(photos), albumArtURI(baseURL, album.AlbumThumbnailAssetID)))
+			didl = wrapDIDL(buildContainer(objectID, "albums", album.AlbumName, len(media), albumArtURI(baseURL, album.AlbumThumbnailAssetID)))
 			returned, total = 1, 1
 		} else {
-			sortPhotos(photos, parseSortCriteria(args.SortCriteria))
-			total = len(photos)
-			paged := page(photos, args.StartingIndex, args.RequestedCount)
+			sortPhotos(media, parseSortCriteria(args.SortCriteria))
+			total = len(media)
+			paged := page(media, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
 			for _, a := range paged {
-				resURL := baseURL + "/media/" + a.ID
-				b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
+				b.WriteString(buildAssetItem(baseURL, objectID, a))
 			}
 			didl = wrapDIDL(b.String())
 			returned = len(paged)
@@ -274,14 +272,13 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 				http.Error(w, "upstream error", http.StatusBadGateway)
 				return
 			}
-			photos := filterPhotos(assets)
-			sortPhotos(photos, parseSortCriteria(args.SortCriteria))
-			total = len(photos)
-			paged := page(photos, args.StartingIndex, args.RequestedCount)
+			media := filterSupportedAssets(assets)
+			sortPhotos(media, parseSortCriteria(args.SortCriteria))
+			total = len(media)
+			paged := page(media, args.StartingIndex, args.RequestedCount)
 			var b strings.Builder
 			for _, a := range paged {
-				resURL := baseURL + "/media/" + a.ID
-				b.WriteString(buildPhotoItem("asset:"+a.ID, objectID, a.OriginalFileName, a.OriginalMimeType, resURL))
+				b.WriteString(buildAssetItem(baseURL, objectID, a))
 			}
 			didl = wrapDIDL(b.String())
 			returned = len(paged)
@@ -295,8 +292,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return
 		}
-		resURL := baseURL + "/media/" + asset.ID
-		didl = wrapDIDL(buildPhotoItem(objectID, "0", asset.OriginalFileName, asset.OriginalMimeType, resURL))
+		didl = wrapDIDL(buildAssetItem(baseURL, "0", *asset))
 		returned, total = 1, 1
 
 	default:
@@ -367,7 +363,7 @@ func sortByTitle[T any](items []T, title func(T) string, req sortRequest) {
 	})
 }
 
-// sortPhotos sorts photo assets in place per req, supporting both
+// sortPhotos sorts photo/video assets in place per req, supporting both
 // properties this server advertises: dc:title (filename) and dc:date
 // (capture time, via Asset.CapturedAt - an asset with a missing or
 // unparseable timestamp sorts as the zero time, i.e. oldest).
@@ -402,16 +398,29 @@ func page[T any](items []T, startingIndex, requestedCount int) []T {
 	return items[startingIndex:end]
 }
 
-// filterPhotos keeps only the photo assets (see Asset.IsPhoto) - we don't
-// support serving/playing videos yet.
-func filterPhotos(assets []immich.Asset) []immich.Asset {
-	photos := make([]immich.Asset, 0, len(assets))
+// filterSupportedAssets keeps photo and video assets - other types Immich
+// may report (e.g. audio) are skipped since neither Browse listings nor
+// /media serving support them.
+func filterSupportedAssets(assets []immich.Asset) []immich.Asset {
+	out := make([]immich.Asset, 0, len(assets))
 	for _, a := range assets {
-		if a.IsPhoto() {
-			photos = append(photos, a)
+		if a.IsPhoto() || a.IsVideo() {
+			out = append(out, a)
 		}
 	}
-	return photos
+	return out
+}
+
+// buildAssetItem renders the DIDL-Lite <item> for one asset. Videos use
+// Immich's generated thumbnail as their albumArtURI (see
+// buildItem/GetAssetThumbnail) since a video's own bytes can't double as
+// a preview image the way a photo's can.
+func buildAssetItem(baseURL, parentID string, a immich.Asset) string {
+	resURL := baseURL + "/media/" + a.ID
+	if a.IsVideo() {
+		return buildItem("asset:"+a.ID, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, baseURL+"/thumbnail/"+a.ID, true)
+	}
+	return buildItem("asset:"+a.ID, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, resURL, false)
 }
 
 // albumArtURI builds the cover URL for an album container from its

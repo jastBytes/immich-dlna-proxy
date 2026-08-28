@@ -5,9 +5,9 @@
 
 [![CI](https://github.com/jastbytes/immich-dlna-proxy/actions/workflows/ci.yml/badge.svg)](https://github.com/jastbytes/immich-dlna-proxy/actions/workflows/ci.yml)
 
-Exposes your Immich albums, named people, and full photo timeline (photos
-only, for now) as a DLNA MediaServer so older Smart TVs / DLNA clients can
-browse and display them without any extra app.
+Exposes your Immich albums, named people, and full photo/video timeline
+(photos and videos) as a DLNA MediaServer so older Smart TVs / DLNA
+clients can browse and display them without any extra app.
 
 Written in Go, no external dependencies — just the standard library.
 
@@ -21,29 +21,49 @@ Written in Go, no external dependencies — just the standard library.
 - **ContentDirectory (SOAP over HTTP)**: on `Browse`, calls the Immich API
   (`GET /api/albums`, `GET /api/albums/{id}`, `GET /api/people`,
   `GET /api/people/{id}/assets`, `POST /api/search/metadata`) and maps the
-  root to three folders, "Albums", "People", and "Timeline" (every photo,
-  newest first), each album/person to a DLNA *container* (folder), and
-  each photo asset to a DLNA *item*.
+  root to three folders, "Albums", "People", and "Timeline" (every
+  photo/video, newest first), each album/person to a DLNA *container*
+  (folder), and each photo/video asset to a DLNA *item*.
 - **X_MS_MediaReceiverRegistrar**: a Microsoft-defined UPnP extension some
   clients (Xbox, Windows Media Player, some Samsung firmwares) require to
   be present before they'll browse a server's content at all - the proxy
   advertises it and always answers "authorized".
-- **Media streaming (HTTP)**: `/media/{assetID}` serves photo bytes to the
-  TV. On a cache miss, it downloads the full original from Immich's
-  `/api/assets/{id}/original`, writes it to a disk cache, then serves it
-  from there (with proper `Range`/`ETag` support via `http.ServeContent`).
-  On a cache hit, it's served straight from disk - no Immich call at all.
-  `/media/person/{personID}` works the same way for person cover
-  thumbnails, backed by Immich's `/api/people/{id}/thumbnail`.
+- **Media streaming (HTTP)**: `/media/{assetID}` serves photo/video bytes
+  to the TV. On a cache miss, it downloads the full original from
+  Immich's `/api/assets/{id}/original`, writes it to a disk cache, then
+  serves it from there (with proper `Range`/`ETag` support via
+  `http.ServeContent`). On a cache hit, it's served straight from disk -
+  no Immich call at all. Videos are streamed straight into the cache
+  file rather than buffered in memory first, since they can be much
+  larger than photos. `/media/person/{personID}` works the same way for
+  person cover thumbnails, backed by Immich's `/api/people/{id}/thumbnail`.
+- **Thumbnails (HTTP)**: `/thumbnail/{assetID}` proxies Immich's
+  generated preview thumbnail, uncached. Used as the `albumArtURI` for
+  video items, since a video file can't double as its own preview image
+  the way a photo can.
 
 ## Caching
 
-Original photo bytes are cached on disk under `CACHE_DIR` so repeated
-views of the same photo don't hit Immich again - only the image bytes
-behind `/media/{assetID}` are cached, not album/asset/people listings.
-See [Architecture → Caching](docs/architecture.md#caching) for cache
-keys and eviction, and [→ Media streaming](docs/architecture.md#media-streaming)
+Original photo/video bytes are cached on disk under `CACHE_DIR` (default
+`/config/cache`) so repeated views of the same asset don't hit Immich
+again. Album/asset/people *listings* (`Browse`) are **not** cached yet -
+only the bytes behind `/media/{assetID}` and `/media/person/{personID}`
+(thumbnails at `/thumbnail/{assetID}`, used for video items'
+`albumArtURI`, are never cached either). See
+[Architecture → Caching](docs/architecture.md#caching) for cache keys and
+eviction, and [→ Media streaming](docs/architecture.md#media-streaming)
 for how `DISABLE_CACHE` changes this.
+
+- Cache key is the asset ID (or `person:<id>` for person thumbnails);
+  stored as `<key>` (bytes) + `<key>.type` (MIME type sidecar).
+- "Last used" is approximated by the file's mtime, touched on every hit.
+- Once the cache exceeds `CACHE_MAX_MB`, a background sweep deletes the
+  least-recently-used files first until back under budget.
+- Set `DISABLE_CACHE=true` to fall back to the old behavior (always proxy
+  live from Immich, nothing written to disk).
+
+Assets with `type == "IMAGE"` or `type == "VIDEO"` are shown; any other
+asset type is skipped.
 
 ## Configuration (environment variables)
 
@@ -127,11 +147,13 @@ the server.
   2026. If album/asset listing returns errors, check your own server's
   live OpenAPI docs at `{IMMICH_URL}/api/doc` and adjust
   `immich/types.go` / `immich/client.go` accordingly.
-- No transcoding: photos are streamed/cached as their original file. Most
-  TVs handle JPEG fine; very large originals (e.g. 48MP RAW-derived JPEGs)
-  might be slow to load or unsupported by some TVs. A follow-up version
-  could cache Immich's `/thumbnail?size=preview` instead of the original
-  for faster loading.
+- No transcoding: photos and videos are streamed/cached as their original
+  file/codec. Most TVs handle JPEG and common video codecs (H.264/AAC in
+  MP4) fine; very large photo originals (e.g. 48MP RAW-derived JPEGs) or
+  video codecs/containers your TV doesn't support natively might be slow
+  to load or fail outright, with no server-side fallback. A follow-up
+  version could cache Immich's `/thumbnail?size=preview` for photos
+  instead of the original for faster loading.
 - Album/asset *listings* aren't cached, only the image bytes - a TV
   re-browsing a huge album will still hit the Immich API for the listing
   every time, just not re-download photos it already viewed.
