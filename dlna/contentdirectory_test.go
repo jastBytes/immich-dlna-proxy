@@ -153,14 +153,223 @@ func newTestServerWithFakeImmich(t *testing.T) (srvURL string) {
 	}))
 	t.Cleanup(fakeImmich.Close)
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", FriendlyName: "Test Server"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}, FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
 
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
 
 	return ts.URL
+}
+
+// fakeImmichFor returns an httptest server backing one account in a
+// multi-user setup: albumID/assetID are namespaced per account so tests
+// can tell which backend actually served a request.
+func fakeImmichFor(t *testing.T, albumID, assetID string) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums":
+			_, _ = w.Write([]byte(`[{"id":"` + albumID + `","albumName":"Album","assetCount":1}]`))
+		case "/api/albums/" + albumID:
+			_, _ = w.Write([]byte(`{"id":"` + albumID + `","albumName":"Album","assetCount":1}`))
+		case "/api/people":
+			_, _ = w.Write([]byte(`{"total":0,"hidden":0,"people":[]}`))
+		case "/api/search/metadata":
+			_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+				"items":[{"id":"` + assetID + `","originalFileName":"photo.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]}}`))
+		case "/api/assets/" + assetID + "/original":
+			w.Header().Set("Content-Type", "image/jpeg")
+			_, _ = w.Write([]byte("bytes-for-" + assetID))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// newTestServerWithMultiUserFakeImmich builds a Server configured with two
+// accounts, each backed by its own fake Immich instance with
+// non-overlapping album/asset IDs, so tests can verify Browse/media
+// requests route to the right account's backend.
+func newTestServerWithMultiUserFakeImmich(t *testing.T) (srvURL string) {
+	t.Helper()
+
+	fake0 := fakeImmichFor(t, "album-a", "photo-a")
+	fake1 := fakeImmichFor(t, "album-b", "photo-b")
+
+	cfg := &config.Config{
+		ImmichURL:    fake0.URL, // unused directly once clients exist per-account
+		APIKeys:      []string{"key-a", "key-b"},
+		FriendlyName: "Test Server",
+	}
+	users := []UserClient{
+		{Name: "Alice", Client: immich.New(fake0.URL, "key-a")},
+		{Name: "Bob", Client: immich.New(fake1.URL, "key-b")},
+	}
+	srv := NewServer(cfg, users, nil)
+
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	return ts.URL
+}
+
+func TestBrowseRootWithMultipleUsersListsOneFolderPerAccount(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "0", "BrowseDirectChildren"))
+	if !strings.Contains(didl, `id="user:0"`) || !strings.Contains(didl, "Alice") {
+		t.Errorf("expected a user:0 container named Alice, got: %s", didl)
+	}
+	if !strings.Contains(didl, `id="user:1"`) || !strings.Contains(didl, "Bob") {
+		t.Errorf("expected a user:1 container named Bob, got: %s", didl)
+	}
+}
+
+func TestBrowseRootMetadataWithMultipleUsersCountsAccounts(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "0", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="0"`) || !strings.Contains(didl, `childCount="2"`) {
+		t.Errorf("expected root childCount 2 (one per account), got: %s", didl)
+	}
+}
+
+func TestBrowseUserFolderMetadataReturnsAccountName(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "user:0", "BrowseMetadata"))
+	if !strings.Contains(didl, `id="user:0"`) || !strings.Contains(didl, `parentID="0"`) || !strings.Contains(didl, "Alice") {
+		t.Errorf("expected user:0 metadata named Alice with parentID 0, got: %s", didl)
+	}
+}
+
+func TestBrowseUserFolderListsAlbumsAndPeople(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "user:0", "BrowseDirectChildren"))
+	if !strings.Contains(didl, `id="user:0:albums"`) || !strings.Contains(didl, `id="user:0:people"`) {
+		t.Errorf("expected user:0:albums and user:0:people containers, got: %s", didl)
+	}
+}
+
+func TestBrowseUserAlbumsScopedToThatAccount(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	didl0 := didlResult(t, browse(t, ts, "user:0:albums", "BrowseDirectChildren"))
+	if !strings.Contains(didl0, `id="user:0:album:album-a"`) {
+		t.Errorf("expected album-a under user 0, got: %s", didl0)
+	}
+	if strings.Contains(didl0, "album-b") {
+		t.Errorf("did not expect user 1's album under user 0, got: %s", didl0)
+	}
+
+	didl1 := didlResult(t, browse(t, ts, "user:1:albums", "BrowseDirectChildren"))
+	if !strings.Contains(didl1, `id="user:1:album:album-b"`) {
+		t.Errorf("expected album-b under user 1, got: %s", didl1)
+	}
+}
+
+func TestBrowseUserAlbumPhotosCarryUserScopedMediaURL(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	didl := didlResult(t, browse(t, ts, "user:0:album:album-a", "BrowseDirectChildren"))
+	if !strings.Contains(didl, `id="user:0:asset:photo-a"`) {
+		t.Errorf("expected photo-a item, got: %s", didl)
+	}
+	if !strings.Contains(didl, "/media/0/photo-a") {
+		t.Errorf("expected a /media/0/photo-a res URL, got: %s", didl)
+	}
+}
+
+// TestBrowsePersonMultiUserAlbumArtURIsAreUserScoped verifies that album
+// and person cover URLs built while browsing a multi-user account carry
+// that account's userIdx prefix (see mediaURL/personThumbnailURL) - not
+// just the plain photo <res> URLs already covered elsewhere.
+func TestBrowsePersonMultiUserAlbumArtURIsAreUserScoped(t *testing.T) {
+	fake0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums":
+			_, _ = w.Write([]byte(`[{"id":"album-a","albumName":"Album","assetCount":1,"albumThumbnailAssetId":"cover-a"}]`))
+		case "/api/people":
+			_, _ = w.Write([]byte(`{"total":1,"hidden":0,"people":[{"id":"person-a","name":"Alice","isHidden":false,"thumbnailPath":"/thumb.jpg"}]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fake0.Close()
+
+	cfg := &config.Config{APIKeys: []string{"key-a", "key-b"}, FriendlyName: "Test Server"}
+	users := []UserClient{
+		{Name: "Alice", Client: immich.New(fake0.URL, "key-a")},
+		{Name: "Bob", Client: immich.New(fake0.URL, "key-b")},
+	}
+	srv := NewServer(cfg, users, nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	albumsDIDL := didlResult(t, browse(t, ts.URL, "user:0:albums", "BrowseDirectChildren"))
+	if !strings.Contains(albumsDIDL, "/media/0/cover-a") {
+		t.Errorf("expected album cover URL scoped to user 0 (/media/0/cover-a), got: %s", albumsDIDL)
+	}
+
+	peopleDIDL := didlResult(t, browse(t, ts.URL, "user:0:people", "BrowseDirectChildren"))
+	if !strings.Contains(peopleDIDL, "/media/person/0/person-a") {
+		t.Errorf("expected person cover URL scoped to user 0 (/media/person/0/person-a), got: %s", peopleDIDL)
+	}
+}
+
+// TestBrowseMultiUserVideoThumbnailURLIsUserScoped verifies that a video
+// item's albumArtURI (which points at the generated-thumbnail endpoint,
+// not the video bytes themselves - see buildAssetItem) also carries the
+// account's userIdx prefix when multiple IMMICH_API_KEYS are configured.
+func TestBrowseMultiUserVideoThumbnailURLIsUserScoped(t *testing.T) {
+	fake0 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums":
+			_, _ = w.Write([]byte(`[{"id":"album-a","albumName":"Album","assetCount":1}]`))
+		case "/api/albums/album-a":
+			_, _ = w.Write([]byte(`{"id":"album-a","albumName":"Album","assetCount":1}`))
+		case "/api/search/metadata":
+			_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+				"items":[{"id":"clip-a","originalFileName":"clip.mp4","originalMimeType":"video/mp4","type":"VIDEO"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer fake0.Close()
+
+	cfg := &config.Config{APIKeys: []string{"key-a", "key-b"}, FriendlyName: "Test Server"}
+	users := []UserClient{
+		{Name: "Alice", Client: immich.New(fake0.URL, "key-a")},
+		{Name: "Bob", Client: immich.New(fake0.URL, "key-b")},
+	}
+	srv := NewServer(cfg, users, nil)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	didl := didlResult(t, browse(t, ts.URL, "user:0:album:album-a", "BrowseDirectChildren"))
+	if !strings.Contains(didl, "/media/0/clip-a") {
+		t.Errorf("expected clip-a's <res> scoped to user 0 (/media/0/clip-a), got: %s", didl)
+	}
+	if !strings.Contains(didl, "/thumbnail/0/clip-a") {
+		t.Errorf("expected clip-a's albumArtURI scoped to user 0 (/thumbnail/0/clip-a), got: %s", didl)
+	}
+}
+
+func TestBrowseUnknownUserIndexReturns404(t *testing.T) {
+	ts := newTestServerWithMultiUserFakeImmich(t)
+
+	resp := browseExpectStatus(t, ts, "user:5", "BrowseDirectChildren", http.StatusNotFound)
+	if !strings.Contains(resp, "unknown object") {
+		t.Errorf("expected 'unknown object' error, got: %s", resp)
+	}
 }
 
 func TestBrowseRootShowsAlbumsAndPeopleFolders(t *testing.T) {
@@ -445,9 +654,9 @@ func newTestServerWithUnsortedFakeImmich(t *testing.T) (srvURL string) {
 	}))
 	t.Cleanup(fakeImmich.Close)
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", FriendlyName: "Test Server"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}, FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
 
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
@@ -589,9 +798,9 @@ func newTestServerWithFailingImmich(t *testing.T) (srvURL string) {
 	}))
 	t.Cleanup(fakeImmich.Close)
 
-	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKey: "test-key", FriendlyName: "Test Server"}
-	client := immich.New(cfg.ImmichURL, cfg.APIKey)
-	srv := NewServer(cfg, client, nil)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}, FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
 
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)

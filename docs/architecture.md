@@ -85,7 +85,10 @@ issues a SOAP `Browse` action against `/ctl/ContentDirectory` with an
 `ObjectID` and a `BrowseFlag` (`BrowseDirectChildren` to list children,
 `BrowseMetadata` to describe the object itself). The root exposes three
 fixed folders, "Albums", "People", and "Timeline"; the proxy maps object
-IDs to Immich concepts like this:
+IDs to Immich concepts like this (this is the mapping for a single
+configured Immich account - see
+[Multiple Immich accounts](#multiple-immich-accounts) below for how it
+changes with `IMMICH_API_KEYS`):
 
 | ObjectID | Represents | `BrowseDirectChildren` returns |
 |---|---|---|
@@ -133,6 +136,41 @@ description fine, calls `BrowseMetadata` on root, and simply never calls
 `BrowseDirectChildren` - worth knowing if you're chasing a similar
 "browses the root but nothing below it" report, since the response still
 looks like well-formed XML at a glance.
+
+### Multiple Immich accounts
+
+With a single `IMMICH_API_KEY` (the default), the table above is the whole
+`ObjectID` space. Setting `IMMICH_API_KEYS` to more than one key changes the
+root: instead of listing "Albums"/"People"/"Timeline" directly, root now
+lists one container per configured account, `user:<idx>` (`idx` is the
+account's position in `IMMICH_API_KEYS`), titled with that account's own
+Immich display name (fetched via `GET /api/users/me` for each key at
+startup, in `main.go`'s `buildUsers` - this is also why a
+misconfigured/unauthorized key in `IMMICH_API_KEYS` fails startup
+immediately rather than silently producing an unlabeled folder). Browsing
+into `user:<idx>` then behaves exactly like the single-account root did,
+but every `ObjectID` underneath it carries a `user:<idx>:` prefix so a
+later `Browse` call knows which account's client to use -
+`user:0:albums`, `user:0:album:<id>`, `user:0:person:<id>`,
+`user:0:timeline`, `user:0:asset:<id>`, and so on. This is implemented by
+`browseUserScope` in `dlna/contentdirectory.go`, which is the entire
+single-account Browse implementation generalized over an injected
+`childPrefix`; `browseMultiUser` handles only the extra top layer
+(root and `user:<idx>`) and delegates into it once per account.
+
+Each asset's `<res>` URL is scoped the same way: with one account it's
+`/media/{assetID}` as always, but with multiple accounts it's
+`/media/{idx}/{assetID}`, so `dlna/server.go`'s media handler
+(`parseMediaPath`) knows which account's API key to download with - an
+asset ID alone isn't enough, since each account can only download assets
+it has permission to see. Album and person cover URLs (`albumArtURI`,
+described further down in this section) and a video's generated
+thumbnail (`GET /thumbnail/{assetID}`, or `/thumbnail/{idx}/{assetID}`
+with multiple accounts) go through the same scoping, via
+`mediaURL`/`personThumbnailURL`/`thumbnailURL`. The disk cache is still
+keyed by asset ID alone (see [Caching](#caching)): Immich asset/person
+IDs are UUIDs, globally unique across every account on the same server,
+so no per-account cache namespacing is needed.
 
 `BrowseDirectChildren` honors `StartingIndex`/`RequestedCount` (see
 `page` in `dlna/contentdirectory.go`) - `RequestedCount` 0 means "no
@@ -195,14 +233,19 @@ views get a real thumbnail instead of a generic folder icon:
 
 - **Albums** reuse `albumThumbnailAssetId` from Immich's own album
   response (`GET /api/albums` and `GET /api/albums/{id}`) - it's a
-  regular asset ID, so the URL is just `/media/<thumbnailAssetID>`, the
-  same endpoint photo items use. An album with no assets has no
-  thumbnail asset, so `albumArtURI` is omitted for it.
+  regular asset ID, so the URL is `/media/<thumbnailAssetID>` (built by
+  `albumArtURI`/`mediaURL`), the same endpoint photo items use - or
+  `/media/<idx>/<thumbnailAssetID>` with multiple `IMMICH_API_KEYS`
+  configured (see [Multiple Immich accounts](#multiple-immich-accounts)).
+  An album with no assets has no thumbnail asset, so `albumArtURI` is
+  omitted for it.
 - **People** don't have an asset-backed thumbnail; Immich instead serves
   a generated face-crop image directly from
   `GET /api/people/{id}/thumbnail`. The proxy fronts this at
   `GET /media/person/{personID}` (`Server.handlePersonThumbnail` in
-  `dlna/server.go`, via `Client.GetPersonThumbnail`), cached under the
+  `dlna/server.go`, via `Client.GetPersonThumbnail`, built by
+  `personArtURI`/`personThumbnailURL` - same `/media/person/<idx>/<id>`
+  scoping as albums with multiple accounts configured), cached under the
   key `"person:<id>"` so it can never collide with an asset cached under
   a plain asset ID. `albumArtURI` is omitted for a person with no
   `thumbnailPath` (Immich hasn't generated a face crop for them yet).
@@ -268,9 +311,12 @@ default), and whether the asset is a photo or a video.
   meant for testing/debugging (see
   [Configuration](configuration.md#tuning-the-cache)).
 
-`GET /media/person/{personID}` is a sibling endpoint for person cover
-thumbnails (see [Container album art](#3-control-contentdirectory-browse)
-above). It shares the same cache-hit/cache-miss/cache-disabled flow -
+`GET /media/person/{personID}` (or `/media/person/{idx}/{personID}` with
+multiple `IMMICH_API_KEYS` configured - see
+[Multiple Immich accounts](#multiple-immich-accounts)) is a sibling
+endpoint for person cover thumbnails (see
+[Container album art](#3-control-contentdirectory-browse) above). It
+shares the same cache-hit/cache-miss/cache-disabled flow -
 `Server.serveMedia` implements the common path for both handlers - except
 it fetches from `Client.GetPersonThumbnail` instead of
 `Client.DownloadOriginal`, and skips the orientation-fix/downscale step:
