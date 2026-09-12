@@ -9,7 +9,7 @@ func clearConfigEnv(t *testing.T) {
 	for _, k := range []string{
 		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
-		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY",
+		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX",
 	} {
 		t.Setenv(k, "")
 	}
@@ -124,6 +124,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MediaFetchConcurrency != 4 {
 		t.Errorf("MediaFetchConcurrency default = %d, want 4", cfg.MediaFetchConcurrency)
 	}
+	if cfg.TitleDatePrefix {
+		t.Errorf("TitleDatePrefix default = true, want false")
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -138,6 +141,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("CACHE_MAX_MB", "100")
 	t.Setenv("MAX_RESOLUTION", "1920x1080")
 	t.Setenv("MEDIA_FETCH_CONCURRENCY", "8")
+	t.Setenv("TITLE_DATE_PREFIX", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -166,6 +170,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.MediaFetchConcurrency != 8 {
 		t.Errorf("MediaFetchConcurrency = %d, want 8", cfg.MediaFetchConcurrency)
+	}
+	if !cfg.TitleDatePrefix {
+		t.Errorf("TitleDatePrefix = false, want true")
 	}
 }
 

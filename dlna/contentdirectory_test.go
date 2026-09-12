@@ -933,6 +933,53 @@ func TestPage(t *testing.T) {
 	}
 }
 
+func TestAssetTitle(t *testing.T) {
+	dated := immich.Asset{OriginalFileName: "IMG_1234.jpg", FileCreatedAt: "2024-05-01T13:04:05Z"}
+	undated := immich.Asset{OriginalFileName: "IMG_5678.jpg"}
+
+	if got := assetTitle(dated, false); got != "IMG_1234.jpg" {
+		t.Errorf("assetTitle(dated, false) = %q, want unprefixed filename", got)
+	}
+	if got, want := assetTitle(dated, true), "2024-05-01 13:04:05 IMG_1234.jpg"; got != want {
+		t.Errorf("assetTitle(dated, true) = %q, want %q", got, want)
+	}
+	if got := assetTitle(undated, true); got != "IMG_5678.jpg" {
+		t.Errorf("assetTitle(undated, true) = %q, want bare filename (no date to prefix)", got)
+	}
+}
+
+// TestBrowseTitleDatePrefix verifies the TitleDatePrefix config option end
+// to end: Browse's DIDL-Lite output carries the date-prefixed title, which
+// is what lets a client that always sorts items by dc:title itself (e.g.
+// Samsung's Smart TV browser - see config.Config.TitleDatePrefix) end up
+// displaying them in chronological order.
+func TestBrowseTitleDatePrefix(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums/album1":
+			_, _ = w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":1}`))
+		case "/api/search/metadata":
+			_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+				"items":[{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-05-01T13:04:05Z"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fakeImmich.Close)
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}, FriendlyName: "Test Server", TitleDatePrefix: true}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	didl := didlResult(t, browse(t, ts.URL, "album:album1", "BrowseDirectChildren"))
+	if !strings.Contains(didl, "2024-05-01 13:04:05 beach.jpg") {
+		t.Errorf("expected date-prefixed title, got: %s", didl)
+	}
+}
+
 func equalInts(a, b []int) bool {
 	if len(a) != len(b) {
 		return false

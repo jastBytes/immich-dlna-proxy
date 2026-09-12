@@ -320,7 +320,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a, s.cfg.TitleDatePrefix))
 		}
 		return wrapDIDL(b.String()), len(paged), total, true
 
@@ -348,7 +348,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix))
 		}
 		return wrapDIDL(b.String()), len(paged), total, true
 
@@ -376,7 +376,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix))
 		}
 		return wrapDIDL(b.String()), len(paged), total, true
 
@@ -388,7 +388,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return "", 0, 0, false
 		}
-		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset)), 1, 1, true
+		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix)), 1, 1, true
 
 	default:
 		http.Error(w, "unknown object", http.StatusNotFound)
@@ -502,13 +502,32 @@ func filterSupportedAssets(assets []immich.Asset) []immich.Asset {
 // can't double as a preview image the way a photo's can. userIdx scopes
 // both the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL
 // do, so /media/ and /thumbnail/ know which account's API key to fetch
-// with.
-func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset) string {
+// with. datePrefixTitles mirrors config.Config.TitleDatePrefix - see
+// assetTitle.
+func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, datePrefixTitles bool) string {
 	resURL := mediaURL(baseURL, userIdx, a.ID)
+	title := assetTitle(a, datePrefixTitles)
 	if a.IsVideo() {
-		return buildItem(id, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true)
+		return buildItem(id, parentID, title, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true)
 	}
-	return buildItem(id, parentID, a.OriginalFileName, a.OriginalMimeType, resURL, resURL, false)
+	return buildItem(id, parentID, title, a.OriginalMimeType, resURL, resURL, false)
+}
+
+// assetTitle returns the dc:title to render for an asset: the bare
+// filename normally, or that filename prefixed with its capture date
+// ("2024-05-01 IMG_1234.jpg") when datePrefixTitles is set - see
+// config.Config.TitleDatePrefix for why. A missing/unparseable capture
+// date (see Asset.CapturedAt) falls back to the bare filename rather than
+// prefixing a zero-time date that would sort before everything else.
+func assetTitle(a immich.Asset, datePrefixTitles bool) string {
+	if !datePrefixTitles {
+		return a.OriginalFileName
+	}
+	capturedAt := a.CapturedAt()
+	if capturedAt.IsZero() {
+		return a.OriginalFileName
+	}
+	return capturedAt.Format("2006-01-02 15:04:05") + " " + a.OriginalFileName
 }
 
 // albumArtURI builds the cover URL for an album container from its
