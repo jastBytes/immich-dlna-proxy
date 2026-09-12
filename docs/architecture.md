@@ -192,6 +192,19 @@ Only the first recognized property in a comma-separated `SortCriteria`
 is honored; any other property is ignored, and an empty/unrecognized
 `SortCriteria` leaves Immich's own listing order untouched.
 
+None of the above helps on a client that never sends `SortCriteria` and
+instead always re-sorts and displays whatever `Browse` returns by
+`dc:title` itself, with no on-device option to choose date order instead
+(Samsung's Smart TV browser is the known case). `TITLE_DATE_PREFIX`
+(`config.Config.TitleDatePrefix`) works around that at the title level
+instead of the sort level: when set, `assetTitle` in
+`dlna/contentdirectory.go` prefixes every photo/video's `dc:title` with
+its capture date (`2024-05-01 13:04:05 IMG_1234.jpg`), so a client
+sorting alphabetically by title ends up chronological anyway. An asset
+with a missing/unparseable `fileCreatedAt` keeps its bare filename
+(nothing sortable to prefix with). Album/person container titles are
+unaffected - only leaf photo/video items go through `assetTitle`.
+
 A handful of other details matter for Samsung TVs specifically (found by
 diffing wire traffic against a real minidlna instance on the same TV,
 which is a useful technique if you run into similar client-specific

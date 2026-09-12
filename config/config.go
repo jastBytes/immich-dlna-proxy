@@ -50,6 +50,16 @@ type Config struct {
 	// This keeps a TV rapidly scrolling through a large album from
 	// hammering Immich with dozens of simultaneous downloads.
 	MediaFetchConcurrency int
+
+	// TitleDatePrefix, when true, prefixes every photo/video item's
+	// dc:title with its capture date ("2024-05-01 IMG_1234.jpg") instead
+	// of the bare filename. Some DLNA clients (Samsung's Smart TV browser
+	// is the known case) always display items sorted by dc:title
+	// themselves, ignoring both the order Browse returns them in and any
+	// SortCriteria the client itself could send - there's no on-TV option
+	// to switch that to date order. Prefixing the title with a sortable
+	// date makes the TV's own alphabetical sort come out chronological.
+	TitleDatePrefix bool
 }
 
 func Load() (*Config, error) {
@@ -93,6 +103,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MEDIA_FETCH_CONCURRENCY must be a positive integer, got %q", concurrency)
 	}
 	cfg.MediaFetchConcurrency = n
+
+	cfg.TitleDatePrefix = os.Getenv("TITLE_DATE_PREFIX") == "true"
 
 	return cfg, nil
 }
