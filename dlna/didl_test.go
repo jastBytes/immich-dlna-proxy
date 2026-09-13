@@ -84,28 +84,28 @@ func TestBuildContainerEscapesAlbumArtURI(t *testing.T) {
 }
 
 func TestBuildItemDefaultsMimeType(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "", "http://host/media/a1", "http://host/media/a1", false)
+	item := buildItem("asset:a1", "albums", "photo.jpg", "", "http://host/media/a1", "http://host/media/a1", false, "", 0)
 	if !strings.Contains(item, `protocolInfo="http-get:*:image/jpeg:*"`) {
 		t.Errorf("expected default mime type image/jpeg, got: %s", item)
 	}
 }
 
 func TestBuildItemUsesGivenMimeType(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.png", "image/png", "http://host/media/a1", "http://host/media/a1", false)
+	item := buildItem("asset:a1", "albums", "photo.png", "image/png", "http://host/media/a1", "http://host/media/a1", false, "", 0)
 	if !strings.Contains(item, `protocolInfo="http-get:*:image/png:*"`) {
 		t.Errorf("expected mime type image/png, got: %s", item)
 	}
 }
 
 func TestBuildItemIncludesAlbumArtURI(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false)
+	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "", 0)
 	if !strings.Contains(item, "<upnp:albumArtURI>http://host/media/a1</upnp:albumArtURI>") {
 		t.Errorf("expected albumArtURI matching res URL, got: %s", item)
 	}
 }
 
 func TestBuildItemEscapesTitleAndURL(t *testing.T) {
-	item := buildItem("asset:a1", "albums", `weird & <title>.jpg`, "image/jpeg", "http://host/media/a1?x=1&y=2", "http://host/media/a1?x=1&y=2", false)
+	item := buildItem("asset:a1", "albums", `weird & <title>.jpg`, "image/jpeg", "http://host/media/a1?x=1&y=2", "http://host/media/a1?x=1&y=2", false, "", 0)
 	if strings.Contains(item, `weird & <title>.jpg`) {
 		t.Errorf("title was not escaped: %s", item)
 	}
@@ -118,7 +118,7 @@ func TestBuildItemEscapesTitleAndURL(t *testing.T) {
 }
 
 func TestBuildItemUsesVideoClassAndDefaultMimeType(t *testing.T) {
-	item := buildItem("asset:v1", "albums", "clip.mp4", "", "http://host/media/v1", "http://host/thumbnail/v1", true)
+	item := buildItem("asset:v1", "albums", "clip.mp4", "", "http://host/media/v1", "http://host/thumbnail/v1", true, "", 0)
 	if !strings.Contains(item, "<upnp:class>object.item.videoItem.movie</upnp:class>") {
 		t.Errorf("expected videoItem.movie class, got: %s", item)
 	}
@@ -134,9 +134,29 @@ func TestBuildItemUsesVideoClassAndDefaultMimeType(t *testing.T) {
 }
 
 func TestBuildItemPhotoUsesPhotoClass(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false)
+	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "", 0)
 	if !strings.Contains(item, "<upnp:class>object.item.imageItem.photo</upnp:class>") {
 		t.Errorf("expected imageItem.photo class, got: %s", item)
+	}
+}
+
+func TestBuildItemIncludesDateAndSizeWhenKnown(t *testing.T) {
+	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "2024-05-01", 123456)
+	if !strings.Contains(item, "<dc:date>2024-05-01</dc:date>") {
+		t.Errorf("expected dc:date element, got: %s", item)
+	}
+	if !strings.Contains(item, `<res protocolInfo="http-get:*:image/jpeg:*" size="123456">http://host/media/a1</res>`) {
+		t.Errorf("expected res size attribute, got: %s", item)
+	}
+}
+
+func TestBuildItemOmitsDateAndSizeWhenUnknown(t *testing.T) {
+	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "", 0)
+	if strings.Contains(item, "<dc:date>") {
+		t.Errorf("expected no dc:date element, got: %s", item)
+	}
+	if strings.Contains(item, "size=") {
+		t.Errorf("expected no res size attribute, got: %s", item)
 	}
 }
 

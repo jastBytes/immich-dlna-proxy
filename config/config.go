@@ -60,6 +60,17 @@ type Config struct {
 	// to switch that to date order. Prefixing the title with a sortable
 	// date makes the TV's own alphabetical sort come out chronological.
 	TitleDatePrefix bool
+
+	// TitleDatePrefixDescending, when true (and only meaningful alongside
+	// TitleDatePrefix), makes the client's own ascending alphabetical
+	// title sort come out newest-first instead of oldest-first. A plain
+	// calendar date can't be made to sort in reverse while still reading
+	// as a real date under simple ASCII comparison, so in this mode the
+	// title instead leads with a zero-padded countdown number (seconds
+	// until a fixed far-future instant - smaller for newer assets, so it
+	// sorts first) followed by the actual human-readable date and
+	// filename - see assetTitle in dlna/contentdirectory.go.
+	TitleDatePrefixDescending bool
 }
 
 func Load() (*Config, error) {
@@ -105,6 +116,7 @@ func Load() (*Config, error) {
 	cfg.MediaFetchConcurrency = n
 
 	cfg.TitleDatePrefix = os.Getenv("TITLE_DATE_PREFIX") == "true"
+	cfg.TitleDatePrefixDescending = os.Getenv("TITLE_DATE_PREFIX_DESC") == "true"
 
 	return cfg, nil
 }

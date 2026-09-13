@@ -320,7 +320,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a, s.cfg.TitleDatePrefix))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
 		}
 		return wrapDIDL(b.String()), len(paged), total, true
 
@@ -348,7 +348,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
 		}
 		return wrapDIDL(b.String()), len(paged), total, true
 
@@ -376,7 +376,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
 		}
 		return wrapDIDL(b.String()), len(paged), total, true
 
@@ -388,7 +388,7 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 			http.Error(w, "upstream error", http.StatusBadGateway)
 			return "", 0, 0, false
 		}
-		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix)), 1, 1, true
+		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending)), 1, 1, true
 
 	default:
 		http.Error(w, "unknown object", http.StatusNotFound)
@@ -502,24 +502,48 @@ func filterSupportedAssets(assets []immich.Asset) []immich.Asset {
 // can't double as a preview image the way a photo's can. userIdx scopes
 // both the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL
 // do, so /media/ and /thumbnail/ know which account's API key to fetch
-// with. datePrefixTitles mirrors config.Config.TitleDatePrefix - see
-// assetTitle.
-func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, datePrefixTitles bool) string {
+// with. datePrefixTitles/datePrefixDescending mirror
+// config.Config.TitleDatePrefix/TitleDatePrefixDescending - see
+// assetTitle. dc:date and the <res> size attribute are populated whenever
+// Immich provides them (capture time, EXIF file size), independent of
+// either date-prefix setting - see buildItem for why they matter.
+func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, datePrefixTitles, datePrefixDescending bool) string {
 	resURL := mediaURL(baseURL, userIdx, a.ID)
-	title := assetTitle(a, datePrefixTitles)
-	if a.IsVideo() {
-		return buildItem(id, parentID, title, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true)
+	title := assetTitle(a, datePrefixTitles, datePrefixDescending)
+	dcDate := ""
+	if capturedAt := a.CapturedAt(); !capturedAt.IsZero() {
+		dcDate = capturedAt.Format("2006-01-02")
 	}
-	return buildItem(id, parentID, title, a.OriginalMimeType, resURL, resURL, false)
+	if a.IsVideo() {
+		return buildItem(id, parentID, title, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true, dcDate, a.ExifInfo.FileSizeInByte)
+	}
+	return buildItem(id, parentID, title, a.OriginalMimeType, resURL, resURL, false, dcDate, a.ExifInfo.FileSizeInByte)
 }
+
+// farFutureUnix anchors the countdown prefix assetTitle uses in descending
+// mode - 9999999999 is 2286-11-20 UTC, safely beyond any real photo's
+// capture date, so farFutureUnix-capturedAt.Unix() stays positive for the
+// foreseeable future while still fitting in the fixed 10-digit width
+// %010d assumes.
+const farFutureUnix = 9999999999
 
 // assetTitle returns the dc:title to render for an asset: the bare
 // filename normally, or that filename prefixed with its capture date
-// ("2024-05-01 IMG_1234.jpg") when datePrefixTitles is set - see
+// ("2024-05-01 13:04:05 IMG_1234.jpg") when datePrefixTitles is set - see
 // config.Config.TitleDatePrefix for why. A missing/unparseable capture
 // date (see Asset.CapturedAt) falls back to the bare filename rather than
 // prefixing a zero-time date that would sort before everything else.
-func assetTitle(a immich.Asset, datePrefixTitles bool) string {
+//
+// A plain calendar date can't be made to sort in reverse while still
+// reading as a real date, since simple ASCII/alphabetical comparison (all
+// a DLNA client that always sorts by dc:title itself ever does - see
+// TitleDatePrefix) only ever produces ascending order for
+// lexicographically-ordered date strings. So when datePrefixDescending is
+// also set, the title instead leads with a zero-padded countdown
+// (farFutureUnix minus the capture time, in seconds - smaller for newer
+// assets, so it sorts first) ahead of the same human-readable date and
+// filename, e.g. "0000123456 2024-05-01 13:04:05 IMG_1234.jpg".
+func assetTitle(a immich.Asset, datePrefixTitles, datePrefixDescending bool) string {
 	if !datePrefixTitles {
 		return a.OriginalFileName
 	}
@@ -527,7 +551,15 @@ func assetTitle(a immich.Asset, datePrefixTitles bool) string {
 	if capturedAt.IsZero() {
 		return a.OriginalFileName
 	}
-	return capturedAt.Format("2006-01-02 15:04:05") + " " + a.OriginalFileName
+	human := capturedAt.Format("2006-01-02 15:04:05") + " " + a.OriginalFileName
+	if !datePrefixDescending {
+		return human
+	}
+	countdown := farFutureUnix - capturedAt.Unix()
+	if countdown < 0 {
+		countdown = 0
+	}
+	return fmt.Sprintf("%010d %s", countdown, human)
 }
 
 // albumArtURI builds the cover URL for an album container from its

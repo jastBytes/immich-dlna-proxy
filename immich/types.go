@@ -27,6 +27,19 @@ type Asset struct {
 	// FileCreatedAt is Immich's authoritative capture timestamp (RFC3339,
 	// usually derived from EXIF) - see CapturedAt.
 	FileCreatedAt string `json:"fileCreatedAt"`
+	// ExifInfo carries Immich's parsed EXIF metadata; only FileSizeInByte
+	// is used here, for the DIDL-Lite <res> element's size attribute (see
+	// buildAssetItem in dlna/contentdirectory.go) - without it, DLNA
+	// clients that show a size/date readout for the selected item (e.g.
+	// Samsung's Smart TV browser) display a placeholder like "0 bytes"
+	// instead of leaving it blank. Older Immich versions or endpoints
+	// that omit exifInfo simply decode to a zero value, which
+	// buildAssetItem treats as "size unknown" and omits the attribute
+	// entirely, matching this repo's pass-through-on-unsupported-input
+	// convention.
+	ExifInfo struct {
+		FileSizeInByte int64 `json:"fileSizeInByte"`
+	} `json:"exifInfo"`
 }
 
 // IsPhoto reports whether the asset is a photo.

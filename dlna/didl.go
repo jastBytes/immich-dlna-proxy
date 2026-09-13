@@ -59,7 +59,13 @@ func buildContainer(id, parentID, title string, childCount int, albumArtURI stri
 // albumArtURL is typically the same as resURL (the photo is its own
 // thumbnail); for a video it must point at a real image instead, since a
 // browser fetching albumArtURI can't decode a video file as one.
-func buildItem(id, parentID, title, mimeType, resURL, albumArtURL string, isVideo bool) string {
+// dcDate ("2006-01-02", or "" if unknown) and sizeBytes (0 if unknown)
+// are omitted entirely rather than rendered as a bogus value when
+// unavailable - see buildAssetItem in contentdirectory.go for why they
+// matter: without them, some DLNA clients (Samsung's Smart TV browser
+// is the known case) show a per-item info readout of "0 bytes"/"Jan 1
+// 1970" instead of leaving those fields blank.
+func buildItem(id, parentID, title, mimeType, resURL, albumArtURL string, isVideo bool, dcDate string, sizeBytes int64) string {
 	class, defaultMime := "object.item.imageItem.photo", "image/jpeg"
 	if isVideo {
 		class, defaultMime = "object.item.videoItem.movie", "video/mp4"
@@ -67,15 +73,24 @@ func buildItem(id, parentID, title, mimeType, resURL, albumArtURL string, isVide
 	if mimeType == "" {
 		mimeType = defaultMime
 	}
+	dateElem := ""
+	if dcDate != "" {
+		dateElem = fmt.Sprintf(`<dc:date>%s</dc:date>`, html.EscapeString(dcDate))
+	}
+	sizeAttr := ""
+	if sizeBytes > 0 {
+		sizeAttr = fmt.Sprintf(` size="%d"`, sizeBytes)
+	}
 	return fmt.Sprintf(
 		`<item id="%s" parentID="%s" restricted="1">`+
 			`<dc:title>%s</dc:title>`+
+			`%s`+
 			`<upnp:class>%s</upnp:class>`+
 			`<upnp:albumArtURI>%s</upnp:albumArtURI>`+
-			`<res protocolInfo="http-get:*:%s:*">%s</res>`+
+			`<res protocolInfo="http-get:*:%s:*"%s>%s</res>`+
 			`</item>`,
-		xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title), class,
-		html.EscapeString(albumArtURL), mimeType, html.EscapeString(resURL),
+		xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title), dateElem, class,
+		html.EscapeString(albumArtURL), mimeType, sizeAttr, html.EscapeString(resURL),
 	)
 }
 
