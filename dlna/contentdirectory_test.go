@@ -959,7 +959,7 @@ func TestAssetTitle(t *testing.T) {
 
 	older := immich.Asset{OriginalFileName: "old.jpg", FileCreatedAt: "2020-01-01T00:00:00Z"}
 	newer := immich.Asset{OriginalFileName: "new.jpg", FileCreatedAt: "2024-05-01T13:04:05Z"}
-	if !(assetTitle(newer, true, true) < assetTitle(older, true, true)) {
+	if assetTitle(newer, true, true) >= assetTitle(older, true, true) {
 		t.Errorf("descending countdown prefix should sort the newer asset before the older one")
 	}
 }
