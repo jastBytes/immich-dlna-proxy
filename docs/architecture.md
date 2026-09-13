@@ -205,6 +205,29 @@ with a missing/unparseable `fileCreatedAt` keeps its bare filename
 (nothing sortable to prefix with). Album/person container titles are
 unaffected - only leaf photo/video items go through `assetTitle`.
 
+That default order is oldest-first, because a plain calendar date string
+sorts in ascending order under simple alphabetical/ASCII comparison - the
+only kind of sort a client that ignores `SortCriteria` ever does - and
+there's no way to make a *readable* date sort in reverse under that same
+comparison. `TITLE_DATE_PREFIX_DESC`
+(`config.Config.TitleDatePrefixDescending`, only meaningful alongside
+`TITLE_DATE_PREFIX`) works around that by leading the title with a
+zero-padded countdown instead: `farFutureUnix - capturedAt.Unix()` (seconds
+until a fixed instant far beyond any real photo, `9999999999` /
+2286-11-20 UTC), so a newer asset gets a smaller number and sorts first,
+followed by the same human-readable date and filename as before, e.g.
+`8285431354 2024-05-01 13:04:05 IMG_1234.jpg`.
+
+Independently of either `TITLE_DATE_PREFIX` setting, `buildAssetItem`
+also populates each item's `<dc:date>` element (`YYYY-MM-DD`, from the
+same `Asset.CapturedAt`) and its `<res>` element's `size` attribute (from
+Immich's `exifInfo.fileSizeInByte`) whenever Immich provides them, and
+omits both otherwise rather than rendering a placeholder. Without them, a
+DLNA client that shows a per-item info readout (Samsung's Smart TV
+browser again) has nothing to read and falls back to displaying "0
+bytes" and the Unix epoch ("Jan 1 1970") instead of leaving the fields
+blank.
+
 A handful of other details matter for Samsung TVs specifically (found by
 diffing wire traffic against a real minidlna instance on the same TV,
 which is a useful technique if you run into similar client-specific

@@ -9,7 +9,7 @@ func clearConfigEnv(t *testing.T) {
 	for _, k := range []string{
 		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
-		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX",
+		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX", "TITLE_DATE_PREFIX_DESC",
 	} {
 		t.Setenv(k, "")
 	}
@@ -127,6 +127,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.TitleDatePrefix {
 		t.Errorf("TitleDatePrefix default = true, want false")
 	}
+	if cfg.TitleDatePrefixDescending {
+		t.Errorf("TitleDatePrefixDescending default = true, want false")
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -142,6 +145,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("MAX_RESOLUTION", "1920x1080")
 	t.Setenv("MEDIA_FETCH_CONCURRENCY", "8")
 	t.Setenv("TITLE_DATE_PREFIX", "true")
+	t.Setenv("TITLE_DATE_PREFIX_DESC", "true")
 
 	cfg, err := Load()
 	if err != nil {
@@ -173,6 +177,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if !cfg.TitleDatePrefix {
 		t.Errorf("TitleDatePrefix = false, want true")
+	}
+	if !cfg.TitleDatePrefixDescending {
+		t.Errorf("TitleDatePrefixDescending = false, want true")
 	}
 }
 

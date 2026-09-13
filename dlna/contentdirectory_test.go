@@ -937,14 +937,30 @@ func TestAssetTitle(t *testing.T) {
 	dated := immich.Asset{OriginalFileName: "IMG_1234.jpg", FileCreatedAt: "2024-05-01T13:04:05Z"}
 	undated := immich.Asset{OriginalFileName: "IMG_5678.jpg"}
 
-	if got := assetTitle(dated, false); got != "IMG_1234.jpg" {
-		t.Errorf("assetTitle(dated, false) = %q, want unprefixed filename", got)
+	if got := assetTitle(dated, false, false); got != "IMG_1234.jpg" {
+		t.Errorf("assetTitle(dated, false, false) = %q, want unprefixed filename", got)
 	}
-	if got, want := assetTitle(dated, true), "2024-05-01 13:04:05 IMG_1234.jpg"; got != want {
-		t.Errorf("assetTitle(dated, true) = %q, want %q", got, want)
+	if got, want := assetTitle(dated, true, false), "2024-05-01 13:04:05 IMG_1234.jpg"; got != want {
+		t.Errorf("assetTitle(dated, true, false) = %q, want %q", got, want)
 	}
-	if got := assetTitle(undated, true); got != "IMG_5678.jpg" {
-		t.Errorf("assetTitle(undated, true) = %q, want bare filename (no date to prefix)", got)
+	if got := assetTitle(undated, true, false); got != "IMG_5678.jpg" {
+		t.Errorf("assetTitle(undated, true, false) = %q, want bare filename (no date to prefix)", got)
+	}
+	if got := assetTitle(undated, true, true); got != "IMG_5678.jpg" {
+		t.Errorf("assetTitle(undated, true, true) = %q, want bare filename (no date to prefix)", got)
+	}
+
+	// Descending mode leads with a countdown (farFutureUnix - capture
+	// time) so a client's own ascending alphabetical sort comes out
+	// newest-first; the human-readable date/filename still follow it.
+	if got, want := assetTitle(dated, true, true), "8285431354 2024-05-01 13:04:05 IMG_1234.jpg"; got != want {
+		t.Errorf("assetTitle(dated, true, true) = %q, want %q", got, want)
+	}
+
+	older := immich.Asset{OriginalFileName: "old.jpg", FileCreatedAt: "2020-01-01T00:00:00Z"}
+	newer := immich.Asset{OriginalFileName: "new.jpg", FileCreatedAt: "2024-05-01T13:04:05Z"}
+	if !(assetTitle(newer, true, true) < assetTitle(older, true, true)) {
+		t.Errorf("descending countdown prefix should sort the newer asset before the older one")
 	}
 }
 
@@ -977,6 +993,84 @@ func TestBrowseTitleDatePrefix(t *testing.T) {
 	didl := didlResult(t, browse(t, ts.URL, "album:album1", "BrowseDirectChildren"))
 	if !strings.Contains(didl, "2024-05-01 13:04:05 beach.jpg") {
 		t.Errorf("expected date-prefixed title, got: %s", didl)
+	}
+}
+
+// TestBrowseTitleDatePrefixDescending is TestBrowseTitleDatePrefix's
+// counterpart for TitleDatePrefixDescending: the title still carries the
+// human-readable date, but leads with the countdown prefix assetTitle
+// computes for it (see TestAssetTitle for the same value).
+func TestBrowseTitleDatePrefixDescending(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums/album1":
+			_, _ = w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":1}`))
+		case "/api/search/metadata":
+			_, _ = w.Write([]byte(`{"assets":{"total":1,"count":1,"nextPage":null,
+				"items":[{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-05-01T13:04:05Z"}]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fakeImmich.Close)
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}, FriendlyName: "Test Server", TitleDatePrefix: true, TitleDatePrefixDescending: true}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	didl := didlResult(t, browse(t, ts.URL, "album:album1", "BrowseDirectChildren"))
+	if !strings.Contains(didl, "8285431354 2024-05-01 13:04:05 beach.jpg") {
+		t.Errorf("expected countdown-prefixed title, got: %s", didl)
+	}
+}
+
+// TestBrowseAssetItemCarriesDateAndSize verifies buildAssetItem populates
+// dc:date and the <res> size attribute whenever Immich provides a capture
+// timestamp/EXIF file size, and omits both when it doesn't - without
+// these, some DLNA clients (Samsung's Smart TV browser is the known case)
+// show a per-item info readout of "0 bytes"/"Jan 1 1970" instead of
+// leaving it blank. This is independent of TITLE_DATE_PREFIX.
+func TestBrowseAssetItemCarriesDateAndSize(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/albums/album1":
+			_, _ = w.Write([]byte(`{"id":"album1","albumName":"Vacation","assetCount":2}`))
+		case "/api/search/metadata":
+			_, _ = w.Write([]byte(`{"assets":{"total":2,"count":2,"nextPage":null,
+				"items":[
+					{"id":"photo1","originalFileName":"beach.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-05-01T13:04:05Z","exifInfo":{"fileSizeInByte":123456}},
+					{"id":"photo2","originalFileName":"unknown.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}
+				]}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(fakeImmich.Close)
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}, FriendlyName: "Test Server"}
+	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
+	srv := NewServer(cfg, []UserClient{{Client: client}}, nil)
+	ts := httptest.NewServer(srv.Mux())
+	t.Cleanup(ts.Close)
+
+	didl := didlResult(t, browse(t, ts.URL, "album:album1", "BrowseDirectChildren"))
+	if !strings.Contains(didl, "<dc:date>2024-05-01</dc:date>") {
+		t.Errorf("expected dc:date for photo1, got: %s", didl)
+	}
+	if !strings.Contains(didl, `size="123456"`) {
+		t.Errorf("expected res size=123456 for photo1, got: %s", didl)
+	}
+
+	unknownItem := didl[strings.Index(didl, `id="asset:photo2"`):]
+	if strings.Contains(unknownItem, "<dc:date>") {
+		t.Errorf("expected no dc:date for photo2 (no fileCreatedAt), got: %s", unknownItem)
+	}
+	if strings.Contains(unknownItem, "size=") {
+		t.Errorf("expected no res size for photo2 (no exifInfo), got: %s", unknownItem)
 	}
 }
 
