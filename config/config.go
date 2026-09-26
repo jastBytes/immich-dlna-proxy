@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all runtime settings for the proxy.
@@ -72,6 +73,15 @@ type Config struct {
 	// filename - see assetTitle in dlna/contentdirectory.go.
 	TitleDatePrefixDescending bool
 
+	// ListingCacheTTL is how long Immich listing responses (albums,
+	// people, an album's/person's assets, the timeline) are reused across
+	// Browse calls. A TV pages through a container with many small Browse
+	// requests; without this, each one re-fetches the complete listing
+	// from Immich. Set via LISTING_CACHE_SECONDS (default 30); 0 disables
+	// it so every Browse hits Immich live. Photo/video bytes are cached
+	// separately (CacheDir) and unaffected.
+	ListingCacheTTL time.Duration
+
 	// Debug enables verbose logging (DEBUG=true): every /media/ and
 	// /thumbnail/ request, per-photo orientation/resize notes, and
 	// background cache fills. Off by default because a TV scrolling
@@ -121,6 +131,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("MEDIA_FETCH_CONCURRENCY must be a positive integer, got %q", concurrency)
 	}
 	cfg.MediaFetchConcurrency = n
+
+	listingTTL := getEnvDefault("LISTING_CACHE_SECONDS", "30")
+	secs, err := strconv.Atoi(listingTTL)
+	if err != nil || secs < 0 {
+		return nil, fmt.Errorf("LISTING_CACHE_SECONDS must be a non-negative integer, got %q", listingTTL)
+	}
+	cfg.ListingCacheTTL = time.Duration(secs) * time.Second
 
 	cfg.TitleDatePrefix = os.Getenv("TITLE_DATE_PREFIX") == "true"
 	cfg.TitleDatePrefixDescending = os.Getenv("TITLE_DATE_PREFIX_DESC") == "true"

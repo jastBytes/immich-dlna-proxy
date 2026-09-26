@@ -110,7 +110,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		// thing that ever existed - no "user:<idx>" folder level, and
 		// /media/, /thumbnail/ URLs keep their original /media/{assetID}
 		// shape (userIdx -1, see mediaURL).
-		didl, returned, total, err = s.browseUserScope(s.users[0].Client, -1, "", objectID, s.cfg.FriendlyName, "-1", "0", args, baseURL)
+		didl, returned, total, err = s.browseUserScope(s.cachedClient(-1), -1, "", objectID, s.cfg.FriendlyName, "-1", "0", args, baseURL)
 	}
 	if err != nil {
 		writeBrowseError(w, objectID, err)
@@ -163,7 +163,7 @@ func (s *Server) browseMultiUser(objectID string, args *browseArgs, baseURL stri
 			return "", 0, 0, errNoSuchObject
 		}
 		user := s.users[idx]
-		return s.browseUserScope(user.Client, idx, "user:"+strconv.Itoa(idx)+":", local, user.Name, "0", userObjectID(idx), args, baseURL)
+		return s.browseUserScope(s.cachedClient(idx), idx, "user:"+strconv.Itoa(idx)+":", local, user.Name, "0", userObjectID(idx), args, baseURL)
 
 	default:
 		return "", 0, 0, errNoSuchObject
@@ -210,7 +210,7 @@ func parseUserObjectID(objectID string, numUsers int) (idx int, local string, ok
 // to fetch with (-1 for the single-user case, which keeps the original
 // URL shapes). rootSelfID/rootParentID/rootTitle describe how local=="0"
 // renders itself under BrowseMetadata.
-func (s *Server) browseUserScope(client *immich.Client, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, err error) {
+func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, err error) {
 	switch {
 	case local == "0" && args.BrowseFlag == "BrowseMetadata":
 		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, 3, "")), 1, 1, nil
@@ -250,6 +250,7 @@ func (s *Server) browseUserScope(client *immich.Client, userIdx int, childPrefix
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("ListAlbums: %w", err)
 		}
+		albums = slices.Clone(albums) // the listing cache's copy is shared
 		sortByTitle(albums, func(a immich.Album) string { return a.AlbumName }, parseSortCriteria(args.SortCriteria))
 		total = len(albums)
 		paged := page(albums, args.StartingIndex, args.RequestedCount)
@@ -313,10 +314,6 @@ func (s *Server) browseUserScope(client *immich.Client, userIdx int, childPrefix
 		if !immich.ValidID(albumID) {
 			return "", 0, 0, errNoSuchObject
 		}
-		album, err := client.GetAlbum(albumID)
-		if err != nil {
-			return "", 0, 0, fmt.Errorf("GetAlbum(%s): %w", albumID, err)
-		}
 		assets, err := client.GetAlbumAssets(albumID)
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("GetAlbumAssets(%s): %w", albumID, err)
@@ -324,6 +321,12 @@ func (s *Server) browseUserScope(client *immich.Client, userIdx int, childPrefix
 		media := filterSupportedAssets(assets)
 
 		if args.BrowseFlag == "BrowseMetadata" {
+			// Only metadata needs the album itself (name, cover); listing
+			// its children needs just the assets.
+			album, err := client.GetAlbum(albumID)
+			if err != nil {
+				return "", 0, 0, fmt.Errorf("GetAlbum(%s): %w", albumID, err)
+			}
 			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"albums", album.AlbumName, len(media), albumArtURI(baseURL, userIdx, album.AlbumThumbnailAssetID))), 1, 1, nil
 		}
 		sortPhotos(media, parseSortCriteria(args.SortCriteria))

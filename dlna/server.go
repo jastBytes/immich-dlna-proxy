@@ -55,6 +55,10 @@ type Server struct {
 	// enabled; without a cache there's nowhere to share the result.
 	flightsMu sync.Mutex
 	flights   map[string]*flight
+
+	// listings briefly caches Immich listing responses for Browse - see
+	// listingCache.
+	listings *listingCache
 }
 
 // flight is one in-progress cache fill for a cache key.
@@ -74,7 +78,7 @@ func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
 		concurrency = 4
 	}
 	debugLogging.Store(cfg.Debug)
-	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}}
+	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL)}
 }
 
 func (s *Server) Mux() http.Handler {
