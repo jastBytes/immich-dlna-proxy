@@ -583,10 +583,17 @@ func (s *Server) maybeResize(assetID string, data []byte) []byte {
 	return out
 }
 
-// ListenAndServe starts the HTTP part of the server (description, SOAP
-// control, and media streaming). Run this in a goroutine alongside the
-// SSDP responder.
-func (s *Server) ListenAndServe() error {
-	log.Printf("HTTP (description/SOAP/media) listening on %s", s.cfg.ListenAddr)
-	return http.ListenAndServe(s.cfg.ListenAddr, s.Mux())
+// NewHTTPServer returns the HTTP part of the server (description, SOAP
+// control, and media streaming), ready to ListenAndServe. Run it
+// alongside the SSDP responder. ReadHeaderTimeout keeps an idle or
+// malicious client from holding a connection open without ever sending a
+// request; there's deliberately no WriteTimeout, which would cut off
+// long video streams.
+func (s *Server) NewHTTPServer() *http.Server {
+	return &http.Server{
+		Addr:              s.cfg.ListenAddr,
+		Handler:           s.Mux(),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+	}
 }

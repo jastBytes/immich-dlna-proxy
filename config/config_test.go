@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 // clearConfigEnv unsets every env var Load reads, so each test starts from
 // a clean slate regardless of what the test binary's environment carries.
@@ -10,6 +13,7 @@ func clearConfigEnv(t *testing.T) {
 		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
 		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX", "TITLE_DATE_PREFIX_DESC",
+		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG",
 	} {
 		t.Setenv(k, "")
 	}
@@ -129,6 +133,18 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.TitleDatePrefixDescending {
 		t.Errorf("TitleDatePrefixDescending default = true, want false")
+	}
+	if cfg.ListingCacheTTL != 30*time.Second {
+		t.Errorf("ListingCacheTTL default = %s, want 30s", cfg.ListingCacheTTL)
+	}
+	if cfg.TimelineGrouping != "none" {
+		t.Errorf("TimelineGrouping default = %q, want none", cfg.TimelineGrouping)
+	}
+	if cfg.AdvertiseIP != "" {
+		t.Errorf("AdvertiseIP default = %q, want empty", cfg.AdvertiseIP)
+	}
+	if cfg.Debug {
+		t.Errorf("Debug default = true, want false")
 	}
 }
 
@@ -277,5 +293,54 @@ func TestParseMaxResolution(t *testing.T) {
 				t.Fatalf("input %q: got %dx%d, want %dx%d", c.in, w, h, c.wantW, c.wantH)
 			}
 		})
+	}
+}
+
+func loadWith(t *testing.T, env map[string]string) (*Config, error) {
+	t.Helper()
+	clearConfigEnv(t)
+	t.Setenv("IMMICH_URL", "http://immich.local")
+	t.Setenv("IMMICH_API_KEY", "key")
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	return Load()
+}
+
+func TestLoadNewOptions(t *testing.T) {
+	cfg, err := loadWith(t, map[string]string{
+		"LISTING_CACHE_SECONDS": "0",
+		"TIMELINE_GROUPING":     "Month",
+		"ADVERTISE_IP":          "192.168.1.50",
+		"DEBUG":                 "true",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListingCacheTTL != 0 {
+		t.Errorf("ListingCacheTTL = %s, want 0 (disabled)", cfg.ListingCacheTTL)
+	}
+	if cfg.TimelineGrouping != "month" {
+		t.Errorf("TimelineGrouping = %q, want month", cfg.TimelineGrouping)
+	}
+	if cfg.AdvertiseIP != "192.168.1.50" {
+		t.Errorf("AdvertiseIP = %q", cfg.AdvertiseIP)
+	}
+	if !cfg.Debug {
+		t.Error("Debug = false, want true")
+	}
+}
+
+func TestLoadRejectsInvalidNewOptions(t *testing.T) {
+	for _, env := range []map[string]string{
+		{"LISTING_CACHE_SECONDS": "-1"},
+		{"LISTING_CACHE_SECONDS": "30s"},
+		{"TIMELINE_GROUPING": "week"},
+		{"ADVERTISE_IP": "not-an-ip"},
+		{"ADVERTISE_IP": "::1"},
+	} {
+		if _, err := loadWith(t, env); err == nil {
+			t.Errorf("Load() with %v succeeded, want an error", env)
+		}
 	}
 }

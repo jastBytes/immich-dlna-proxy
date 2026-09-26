@@ -1,6 +1,7 @@
 package dlna
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -27,8 +28,11 @@ func searchTargets(uuid string) []string {
 // RunSSDP listens for M-SEARCH requests and answers them, and periodically
 // sends unsolicited ssdp:alive NOTIFY announcements so clients that are
 // already listening pick the server up without having to search.
-// It blocks until an unrecoverable error occurs.
-func RunSSDP(cfg *config.Config) error {
+// It blocks until ctx is cancelled - at which point it announces
+// ssdp:byebye, so clients drop the server right away instead of listing
+// it until the last announcement's max-age (30 minutes) runs out - or
+// until an unrecoverable error occurs.
+func RunSSDP(ctx context.Context, cfg *config.Config) error {
 	groupAddr, err := net.ResolveUDPAddr("udp4", ssdpAddr)
 	if err != nil {
 		return err
@@ -48,12 +52,13 @@ func RunSSDP(cfg *config.Config) error {
 	}
 	defer func() { _ = conn.Close() }()
 
-	localIP, err := detectLocalIP()
+	localIP, err := advertiseIP(cfg.AdvertiseIP, iface)
 	if err != nil {
 		return fmt.Errorf("could not determine local IP for SSDP: %w", err)
 	}
 	port := portFromAddr(cfg.ListenAddr)
 	location := fmt.Sprintf("http://%s:%s/description.xml", localIP, port)
+	log.Printf("SSDP announcing %s", location)
 
 	// Unicast socket used both to reply to M-SEARCH and to send periodic
 	// NOTIFY alive announcements to the multicast group.
@@ -63,12 +68,20 @@ func RunSSDP(cfg *config.Config) error {
 	}
 	defer func() { _ = outConn.Close() }()
 
-	go notifyLoop(outConn, groupAddr, cfg.UUID, location)
+	go notifyLoop(ctx, outConn, groupAddr, cfg.UUID, location)
+
+	// Closing the listening socket is what unblocks ReadFromUDP below.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer stop()
 
 	buf := make([]byte, 2048)
 	for {
 		n, src, err := conn.ReadFromUDP(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				sendByebye(outConn, groupAddr, cfg.UUID)
+				return nil
+			}
 			log.Printf("SSDP read error: %v", err)
 			continue
 		}
@@ -123,12 +136,36 @@ func sendSearchReply(conn *net.UDPConn, dst *net.UDPAddr, uuid, location, st str
 	}
 }
 
-func notifyLoop(conn *net.UDPConn, group *net.UDPAddr, uuid, location string) {
+func notifyLoop(ctx context.Context, conn *net.UDPConn, group *net.UDPAddr, uuid, location string) {
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
 	for {
 		sendAlive(conn, group, uuid, location)
-		<-ticker.C
+		select {
+		case <-ticker.C:
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// sendByebye announces that the device is going away, one NOTIFY per
+// advertised target, mirroring sendAlive.
+func sendByebye(conn *net.UDPConn, group *net.UDPAddr, uuid string) {
+	for _, nt := range searchTargets(uuid) {
+		usn := "uuid:" + uuid
+		if nt != usn {
+			usn += "::" + nt
+		}
+		notify := "NOTIFY * HTTP/1.1\r\n" +
+			"HOST: 239.255.255.250:1900\r\n" +
+			"NT: " + nt + "\r\n" +
+			"NTS: ssdp:byebye\r\n" +
+			"USN: " + usn + "\r\n" +
+			"\r\n"
+		if _, err := conn.WriteToUDP([]byte(notify), group); err != nil {
+			log.Printf("SSDP byebye failed: %v", err)
+		}
 	}
 }
 
@@ -172,6 +209,53 @@ func portFromAddr(addr string) string {
 		return "8200"
 	}
 	return port
+}
+
+// advertiseIP picks the IP announced in SSDP LOCATION URLs: ADVERTISE_IP
+// if set, else the IPv4 address of SSDP_INTERFACE if one is configured
+// (so a multi-homed host announces the address on the network it's
+// actually advertising to, not whichever one has the default route), else
+// the address the OS would use to reach the internet, else - for a LAN
+// with no default route at all - the first non-loopback IPv4 address.
+func advertiseIP(configured string, iface *net.Interface) (string, error) {
+	if configured != "" {
+		return configured, nil
+	}
+	if iface != nil {
+		return interfaceIPv4(iface)
+	}
+	if ip, err := detectLocalIP(); err == nil {
+		return ip, nil
+	}
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", err
+	}
+	for i := range ifaces {
+		if ifaces[i].Flags&net.FlagUp == 0 || ifaces[i].Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if ip, err := interfaceIPv4(&ifaces[i]); err == nil {
+			return ip, nil
+		}
+	}
+	return "", fmt.Errorf("no non-loopback IPv4 address found; set ADVERTISE_IP")
+}
+
+// interfaceIPv4 returns iface's first IPv4 address.
+func interfaceIPv4(iface *net.Interface) (string, error) {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return "", err
+	}
+	for _, a := range addrs {
+		if ipnet, ok := a.(*net.IPNet); ok {
+			if ip4 := ipnet.IP.To4(); ip4 != nil {
+				return ip4.String(), nil
+			}
+		}
+	}
+	return "", fmt.Errorf("interface %s has no IPv4 address", iface.Name)
 }
 
 // detectLocalIP finds an outbound-facing local IP by "dialing" a UDP socket

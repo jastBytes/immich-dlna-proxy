@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -30,6 +31,11 @@ type Config struct {
 	// Interface optionally restricts SSDP to a single network interface name
 	// (e.g. "eth0"). Empty means "all interfaces".
 	Interface string
+	// AdvertiseIP overrides the IP address announced to DLNA clients in
+	// SSDP LOCATION URLs (ADVERTISE_IP). Empty means auto-detect: the
+	// IPv4 address of Interface if set, otherwise the address the OS
+	// would use to reach the internet.
+	AdvertiseIP string
 
 	// CacheDir is where original photo bytes are cached on disk. Empty
 	// disables caching (every view proxies straight from Immich again).
@@ -104,6 +110,7 @@ func Load() (*Config, error) {
 		FriendlyName: getEnvDefault("FRIENDLY_NAME", "Immich Photos"),
 		UUID:         getEnvDefault("DEVICE_UUID", "3e7f0f4e-8c2e-4f7a-9c2a-immichdlna01"),
 		Interface:    os.Getenv("SSDP_INTERFACE"),
+		AdvertiseIP:  strings.TrimSpace(os.Getenv("ADVERTISE_IP")),
 		CacheDir:     getEnvDefault("CACHE_DIR", "/config/cache"),
 	}
 
@@ -112,6 +119,12 @@ func Load() (*Config, error) {
 	}
 	if len(cfg.APIKeys) == 0 {
 		return nil, fmt.Errorf("IMMICH_API_KEY (or IMMICH_API_KEYS) is not set")
+	}
+
+	if cfg.AdvertiseIP != "" {
+		if ip := net.ParseIP(cfg.AdvertiseIP); ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("ADVERTISE_IP must be an IPv4 address, got %q", cfg.AdvertiseIP)
+		}
 	}
 
 	if os.Getenv("DISABLE_CACHE") == "true" {
