@@ -71,6 +71,13 @@ type Config struct {
 	// sorts first) followed by the actual human-readable date and
 	// filename - see assetTitle in dlna/contentdirectory.go.
 	TitleDatePrefixDescending bool
+
+	// Debug enables verbose logging (DEBUG=true): every /media/ and
+	// /thumbnail/ request, per-photo orientation/resize notes, and
+	// background cache fills. Off by default because a TV scrolling
+	// through an album produces one such line per photo; protocol
+	// requests (description, Browse) are always logged regardless.
+	Debug bool
 }
 
 func Load() (*Config, error) {
@@ -117,6 +124,7 @@ func Load() (*Config, error) {
 
 	cfg.TitleDatePrefix = os.Getenv("TITLE_DATE_PREFIX") == "true"
 	cfg.TitleDatePrefixDescending = os.Getenv("TITLE_DATE_PREFIX_DESC") == "true"
+	cfg.Debug = os.Getenv("DEBUG") == "true"
 
 	return cfg, nil
 }

@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -296,33 +297,54 @@ func TestMediaHandlerNoCacheUpstreamErrorReturnsBadGateway(t *testing.T) {
 	}
 }
 
-func TestMediaHandlerServesVideoAndCachesIt(t *testing.T) {
-	var immichHits int
-	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/assets/clip1/original" {
-			immichHits++
-			w.Header().Set("Content-Type", "video/mp4")
-			_, _ = w.Write([]byte("fake-video-bytes"))
+// waitCached polls until cacheKey is in c (background fills are async).
+func waitCached(t *testing.T, c *cache.Cache, cacheKey string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if f, _, _, ok := c.Get(cacheKey); ok {
+			_ = f.Close()
 			return
 		}
-		http.NotFound(w, r)
-	}))
-	defer fakeImmich.Close()
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("%s never made it into the cache", cacheKey)
+}
 
-	dir := t.TempDir()
-	c, err := cache.New(dir, 0)
+// fakeVideoImmich serves /api/assets/clip1/original with Range support
+// (like real Immich), counting requests.
+func fakeVideoImmich(t *testing.T, content string, hits *atomic.Int32) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/assets/clip1/original" {
+			http.NotFound(w, r)
+			return
+		}
+		hits.Add(1)
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "clip1.mp4", time.Unix(0, 0), strings.NewReader(content))
+	}))
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+// On a cache miss, a video is proxied straight through to Immich (so
+// playback starts immediately) while the full download fills the cache in
+// the background; the next request is then served from the cache.
+func TestMediaHandlerServesVideoAndCachesIt(t *testing.T) {
+	var immichHits atomic.Int32
+	fakeImmich := fakeVideoImmich(t, "fake-video-bytes", &immichHits)
+
+	c, err := cache.New(t.TempDir(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
-	client := immich.New(cfg.ImmichURL, cfg.APIKeys[0])
-	srv := NewServer(cfg, []UserClient{{Client: client}}, c)
-
+	srv := NewServer(cfg, []UserClient{{Client: immich.New(cfg.ImmichURL, cfg.APIKeys[0])}}, c)
 	ts := httptest.NewServer(srv.Mux())
 	defer ts.Close()
 
-	for i := 0; i < 2; i++ {
+	get := func(i int) {
 		resp, err := http.Get(ts.URL + "/media/clip1")
 		if err != nil {
 			t.Fatal(err)
@@ -337,8 +359,167 @@ func TestMediaHandlerServesVideoAndCachesIt(t *testing.T) {
 		}
 	}
 
-	if immichHits != 1 {
-		t.Fatalf("expected exactly 1 upstream hit (2nd request should be served from cache), got %d", immichHits)
+	get(1)
+	waitCached(t, c, "clip1")
+	// One full download (cache fill) plus one proxied request.
+	if n := immichHits.Load(); n != 2 {
+		t.Fatalf("first request: %d upstream hits, want 2 (background fill + proxied playback)", n)
+	}
+	get(2)
+	if n := immichHits.Load(); n != 2 {
+		t.Fatalf("second request hit Immich again (%d hits total), want it served from cache", n)
+	}
+}
+
+// A seek into a video that isn't cached yet must still work: the Range
+// header is forwarded to Immich and its 206 relayed.
+func TestMediaHandlerUncachedVideoForwardsRange(t *testing.T) {
+	for _, withCache := range []bool{true, false} {
+		var hits atomic.Int32
+		fakeImmich := fakeVideoImmich(t, "0123456789", &hits)
+
+		var c *cache.Cache
+		if withCache {
+			var err error
+			if c, err = cache.New(t.TempDir(), 0); err != nil {
+				t.Fatal(err)
+			}
+		}
+		cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+		srv := NewServer(cfg, []UserClient{{Client: immich.New(cfg.ImmichURL, cfg.APIKeys[0])}}, c)
+		ts := httptest.NewServer(srv.Mux())
+
+		req, _ := http.NewRequest(http.MethodGet, ts.URL+"/media/clip1", nil)
+		req.Header.Set("Range", "bytes=2-4")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusPartialContent {
+			t.Errorf("cache=%v: status = %d, want 206", withCache, resp.StatusCode)
+		}
+		if string(body) != "234" {
+			t.Errorf("cache=%v: body = %q, want %q", withCache, body, "234")
+		}
+		if cr := resp.Header.Get("Content-Range"); cr != "bytes 2-4/10" {
+			t.Errorf("cache=%v: Content-Range = %q", withCache, cr)
+		}
+		if withCache {
+			waitCached(t, c, "clip1")
+		}
+		ts.Close()
+	}
+}
+
+// Concurrent cache misses for the same photo share one Immich download.
+func TestMediaHandlerDeduplicatesConcurrentMisses(t *testing.T) {
+	var hits atomic.Int32
+	release := make(chan struct{})
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		<-release
+		w.Header().Set("Content-Type", "image/gif")
+		_, _ = w.Write([]byte("gif-bytes"))
+	}))
+	defer fakeImmich.Close()
+
+	c, err := cache.New(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	srv := NewServer(cfg, []UserClient{{Client: immich.New(cfg.ImmichURL, cfg.APIKeys[0])}}, c)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	const n = 5
+	var wg sync.WaitGroup
+	bodies := make([]string, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			resp, err := http.Get(ts.URL + "/media/photo1")
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			b, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			bodies[i] = string(b)
+		}(i)
+	}
+	// Let every request reach the server and join the flight before the
+	// one upstream download completes.
+	deadline := time.Now().Add(5 * time.Second)
+	for hits.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	if h := hits.Load(); h != 1 {
+		t.Errorf("upstream hits = %d, want 1", h)
+	}
+	for i, b := range bodies {
+		if b != "gif-bytes" {
+			t.Errorf("request %d body = %q", i, b)
+		}
+	}
+}
+
+func TestThumbnailHandlerCachesAfterFirstRequest(t *testing.T) {
+	var hits atomic.Int32
+	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("thumb"))
+	}))
+	defer fakeImmich.Close()
+
+	c, err := cache.New(t.TempDir(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	srv := NewServer(cfg, []UserClient{{Client: immich.New(cfg.ImmichURL, cfg.APIKeys[0])}}, c)
+	ts := httptest.NewServer(srv.Mux())
+	defer ts.Close()
+
+	for i := 0; i < 2; i++ {
+		resp, err := http.Get(ts.URL + "/thumbnail/clip1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if string(b) != "thumb" {
+			t.Fatalf("request %d body = %q", i, b)
+		}
+	}
+	if h := hits.Load(); h != 1 {
+		t.Errorf("upstream hits = %d, want 1", h)
+	}
+	// Cached under its own key, never colliding with the asset's bytes.
+	if f, _, _, ok := c.Get("clip1"); ok {
+		_ = f.Close()
+		t.Error("thumbnail was cached under the bare asset ID")
+	}
+}
+
+func TestMediaHandlerUpstreamNotFoundReturns404(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.NotFoundHandler())
+	defer fakeImmich.Close()
+
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"test-key"}}
+	srv := NewServer(cfg, []UserClient{{Client: immich.New(cfg.ImmichURL, cfg.APIKeys[0])}}, nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/media/missing", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
 	}
 }
 

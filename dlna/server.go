@@ -2,12 +2,14 @@ package dlna
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jastBytes/immich-dlna-proxy/cache"
@@ -38,13 +40,32 @@ type Server struct {
 	users []UserClient
 	cache *cache.Cache // nil if caching is disabled
 
-	// fetchSem bounds how many /media/* requests may be downloading from
-	// Immich at once, across all configured accounts. A TV rapidly
-	// scrolling through a large album can otherwise fire off dozens of
-	// concurrent thumbnail requests, each a cache miss, and overwhelm
-	// Immich; requests beyond the limit queue for a free slot instead, up
-	// to fetchQueueTimeout.
+	// fetchSem bounds how many /media/* and /thumbnail/* requests may be
+	// downloading from Immich at once, across all configured accounts. A
+	// TV rapidly scrolling through a large album can otherwise fire off
+	// dozens of concurrent thumbnail requests, each a cache miss, and
+	// overwhelm Immich; requests beyond the limit queue for a free slot
+	// instead, up to fetchQueueTimeout.
 	fetchSem chan struct{}
+
+	// flights tracks cache keys currently being downloaded into the cache,
+	// so concurrent cache misses for the same key (a TV and its preview
+	// pane, or two TVs) share one Immich download instead of each
+	// starting their own - see serveMedia. Only used with caching
+	// enabled; without a cache there's nowhere to share the result.
+	flightsMu sync.Mutex
+	flights   map[string]*flight
+}
+
+// flight is one in-progress cache fill for a cache key.
+type flight struct {
+	// done is closed once the fill has finished, successfully or not.
+	done chan struct{}
+	// video is closed as soon as the key turns out to be a video, whose
+	// fill then carries on in the background (see serveMedia); waiters
+	// proxy their request straight through to Immich instead of waiting
+	// possibly minutes for the whole file.
+	video chan struct{}
 }
 
 func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
@@ -52,7 +73,8 @@ func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
 	if concurrency <= 0 {
 		concurrency = 4
 	}
-	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency)}
+	debugLogging.Store(cfg.Debug)
+	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}}
 }
 
 func (s *Server) Mux() http.Handler {
@@ -89,17 +111,6 @@ func upnpHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Server", "Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0")
 		w.Header()["EXT"] = []string{""}
-		next.ServeHTTP(w, r)
-	})
-}
-
-// loggingMiddleware logs every incoming HTTP request, primarily to make it
-// obvious whether a DLNA client got as far as fetching /description.xml or
-// calling ContentDirectory Browse at all - useful for diagnosing clients
-// that discover the server over SSDP but then go quiet.
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		log.Printf("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 		next.ServeHTTP(w, r)
 	})
 }
@@ -163,6 +174,23 @@ func thumbnailURL(baseURL string, userIdx int, assetID string) string {
 	return baseURL + "/thumbnail/" + strconv.Itoa(userIdx) + "/" + assetID
 }
 
+// mediaSource describes where serveMedia gets the bytes for one cache
+// key from on a cache miss.
+type mediaSource struct {
+	// fetch downloads the complete bytes and their MIME type.
+	fetch func(ctx context.Context) (io.ReadCloser, string, error)
+	// openRange, if non-nil, requests the same bytes from Immich with a
+	// client's Range header forwarded as-is. Used for videos, which are
+	// proxied straight through on a cache miss rather than downloaded in
+	// full first - see serveMedia. Sources that can never be video
+	// (thumbnails) leave it nil.
+	openRange func(ctx context.Context, rangeHeader string) (*http.Response, error)
+	// transform, if non-nil, is applied to photo bytes before they're
+	// cached and served (EXIF-orientation fixing, MAX_RESOLUTION
+	// downscaling).
+	transform func([]byte) []byte
+}
+
 func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	userIdx, assetID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/media/"), len(s.users))
 	if !ok {
@@ -176,12 +204,18 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// requires it too: most DLNA renderers ignore the orientation tag and
 	// show raw pixels, so a portrait photo tagged "rotate 90" needs the
 	// rotation baked into the pixels themselves to display upright.
-	s.serveMedia(w, r, assetID,
-		func() (io.ReadCloser, string, error) { return client.DownloadOriginal(r.Context(), assetID) },
-		func(data []byte) []byte {
+	s.serveMedia(w, r, assetID, mediaSource{
+		fetch: func(ctx context.Context) (io.ReadCloser, string, error) {
+			return client.DownloadOriginal(ctx, assetID)
+		},
+		openRange: func(ctx context.Context, rangeHeader string) (*http.Response, error) {
+			return client.OpenOriginalRange(ctx, assetID, rangeHeader)
+		},
+		transform: func(data []byte) []byte {
 			data = s.fixOrientation(assetID, data)
 			return s.maybeResize(assetID, data)
-		})
+		},
+	})
 }
 
 // handlePersonThumbnail serves a person's face-crop thumbnail, used as
@@ -204,31 +238,82 @@ func (s *Server) handlePersonThumbnail(w http.ResponseWriter, r *http.Request) {
 	// Cached under the bare person ID, with no userIdx component: person
 	// IDs, like asset IDs, are UUIDs unique across every account on the
 	// same Immich server, so they can't collide between accounts either.
-	s.serveMedia(w, r, "person:"+personID,
-		func() (io.ReadCloser, string, error) { return client.GetPersonThumbnail(r.Context(), personID) },
-		nil)
+	s.serveMedia(w, r, "person:"+personID, mediaSource{
+		fetch: func(ctx context.Context) (io.ReadCloser, string, error) {
+			return client.GetPersonThumbnail(ctx, personID)
+		},
+	})
 }
 
-// serveMedia serves image bytes identified by cacheKey, using the disk
-// cache when enabled. On a cache miss, fetch downloads the original bytes
-// from Immich; transform (may be nil) is applied before the bytes are
-// cached and served - handleMedia uses it for EXIF-orientation fixing and
-// MAX_RESOLUTION downscaling, which don't apply to person thumbnails.
-func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey string, fetch func() (io.ReadCloser, string, error), transform func([]byte) []byte) {
+// handleThumbnail serves Immich's generated preview-sized thumbnail for
+// an asset. It's used for video items' albumArtURI (see buildAssetItem) -
+// a video's own bytes can't double as an image preview the way a photo's
+// can. It shares handleMedia's cache/queue/dedup path, cached under
+// "thumb:<id>" so it never collides with the asset's own bytes: a TV
+// scrolling through a video-heavy album requests these as rapidly as it
+// requests photos, so they need the same protection for Immich.
+func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	userIdx, assetID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/thumbnail/"), len(s.users))
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	client := s.users[userIdx].Client
+
+	s.serveMedia(w, r, "thumb:"+assetID, mediaSource{
+		fetch: func(ctx context.Context) (io.ReadCloser, string, error) {
+			return client.GetAssetThumbnail(ctx, assetID)
+		},
+	})
+}
+
+// serveMedia serves the bytes identified by cacheKey, using the disk
+// cache when enabled:
+//
+//   - Cache hit: served from disk, no Immich call, no queueing.
+//   - Another request is already filling the cache for this key: wait for
+//     it and serve its result (or, once it turns out to be a video, proxy
+//     straight through - see below) rather than downloading it again.
+//   - Otherwise: queue for a fetchSem slot and download from Immich. A
+//     photo is buffered, transformed, cached and served from disk. A
+//     video (when src.openRange is set) is instead proxied straight
+//     through to Immich with the client's Range header, so playback and
+//     seeking start immediately rather than after the whole (possibly
+//     multi-GB) file has downloaded; with caching enabled, the full
+//     download already started carries on in the background, detached
+//     from this request, to fill the cache for next time.
+func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey string, src mediaSource) {
+	var fl *flight
 	if s.cache != nil {
-		if path, mimeType, modTime, ok := s.cache.Get(cacheKey); ok {
-			f, err := os.Open(path)
-			if err != nil {
-				log.Printf("cache: open(%s) failed: %v", path, err)
-				http.Error(w, "cache error", http.StatusInternalServerError)
+		for {
+			if s.serveFromCache(w, r, cacheKey) {
 				return
 			}
-			defer func() { _ = f.Close() }()
-			w.Header().Set("Content-Type", mimeType)
-			http.ServeContent(w, r, cacheKey, modTime, f)
-			return
+			var leader bool
+			fl, leader = s.joinFlight(cacheKey)
+			if leader {
+				break
+			}
+			select {
+			case <-fl.done:
+				continue // re-check the cache; become the leader if the fill failed
+			case <-fl.video:
+				s.proxyRange(w, r, cacheKey, src)
+				return
+			case <-r.Context().Done():
+				return
+			}
 		}
 	}
+	// finish ends this request's flight, unless ownership was handed off
+	// to a background video fill.
+	finish := func() {
+		if fl != nil {
+			s.finishFlight(cacheKey, fl)
+			fl = nil
+		}
+	}
+	defer func() { finish() }()
 
 	// Queue for a free Immich-fetch slot rather than firing off another
 	// concurrent download - see fetchSem's doc comment. Cache hits above
@@ -236,7 +321,6 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 	// unthrottled.
 	select {
 	case s.fetchSem <- struct{}{}:
-		defer func() { <-s.fetchSem }()
 	case <-time.After(fetchQueueTimeout):
 		log.Printf("fetch(%s): timed out after %s waiting for a free Immich fetch slot", cacheKey, fetchQueueTimeout)
 		http.Error(w, "server busy, try again", http.StatusServiceUnavailable)
@@ -244,36 +328,69 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 	case <-r.Context().Done():
 		return
 	}
+	slotHeld := true
+	releaseSlot := func() {
+		if slotHeld {
+			<-s.fetchSem
+			slotHeld = false
+		}
+	}
+	defer releaseSlot()
 
-	// Cache miss (or caching disabled): fetch the full original from
-	// Immich. handleMedia's transform always buffers and decodes it - not
-	// just when resizing is configured - because normalizing EXIF
-	// orientation requires it too: most DLNA renderers ignore the
-	// orientation tag and show raw pixels, so a portrait photo tagged
-	// "rotate 90" needs the rotation baked into the pixels themselves to
-	// display upright.
-	body, mimeType, err := fetch()
+	// The download runs under its own context, cancelled when this
+	// request ends - unless a video's cache fill detaches it below.
+	fetchCtx, cancelFetch := context.WithCancel(context.WithoutCancel(r.Context()))
+	stopFollowingRequest := context.AfterFunc(r.Context(), cancelFetch)
+	detached := false
+	defer func() {
+		if !detached {
+			stopFollowingRequest()
+			cancelFetch()
+		}
+	}()
+
+	body, mimeType, err := src.fetch(fetchCtx)
 	if err != nil {
-		log.Printf("fetch(%s) failed: %v", cacheKey, err)
-		http.Error(w, "upstream error", http.StatusBadGateway)
+		upstreamError(w, cacheKey, err)
 		return
 	}
 
+	if isVideoMimeType(mimeType) && src.openRange != nil {
+		// Playback doesn't occupy a fetch slot: those exist to protect
+		// Immich from bursts of thumbnail requests, not to cap how many
+		// TVs can play a video at once.
+		releaseSlot()
+		if fl != nil && stopFollowingRequest() {
+			detached = true
+			close(fl.video)
+			bgFlight := fl
+			fl = nil // the background fill owns the flight now
+			go s.fillCacheInBackground(cacheKey, mimeType, body, bgFlight, cancelFetch)
+		} else {
+			_ = body.Close()
+		}
+		s.proxyRange(w, r, cacheKey, src)
+		return
+	}
+	defer func() { _ = body.Close() }()
+
 	if isVideoMimeType(mimeType) {
-		s.serveVideo(w, r, cacheKey, mimeType, body)
+		// A video from a source without openRange - not expected from
+		// Immich, but stream it rather than buffering it into memory.
+		s.serveStream(w, r, cacheKey, mimeType, body)
 		return
 	}
 
 	data, err := io.ReadAll(body)
-	_ = body.Close()
 	if err != nil {
 		log.Printf("fetch(%s) read failed: %v", cacheKey, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)
 		return
 	}
+	releaseSlot() // the rest is local CPU/disk work
 
-	if transform != nil {
-		data = transform(data)
+	if src.transform != nil {
+		data = src.transform(data)
 	}
 
 	if s.cache == nil {
@@ -285,19 +402,31 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 	// Populate the cache with the (possibly transformed) bytes, then
 	// serve it from disk - this also correctly answers any Range request
 	// the client made, via http.ServeContent.
-	path, err := s.cache.Put(cacheKey, mimeType, bytes.NewReader(data))
+	f, err := s.cache.Put(cacheKey, mimeType, bytes.NewReader(data))
 	if err != nil {
 		log.Printf("cache: put(%s) failed: %v", cacheKey, err)
 		http.Error(w, "cache error", http.StatusInternalServerError)
 		return
 	}
+	finish() // waiters can serve from the cache now
+	serveFile(w, r, cacheKey, mimeType, f)
+}
 
-	f, err := os.Open(path)
-	if err != nil {
-		log.Printf("cache: open(%s) failed: %v", path, err)
-		http.Error(w, "cache error", http.StatusInternalServerError)
-		return
+// serveFromCache serves cacheKey from the disk cache, reporting false
+// (having written nothing) on a miss.
+func (s *Server) serveFromCache(w http.ResponseWriter, r *http.Request, cacheKey string) bool {
+	f, mimeType, modTime, ok := s.cache.Get(cacheKey)
+	if !ok {
+		return false
 	}
+	defer func() { _ = f.Close() }()
+	w.Header().Set("Content-Type", mimeType)
+	http.ServeContent(w, r, cacheKey, modTime, f)
+	return true
+}
+
+// serveFile serves (and closes) a file just written by cache.Put.
+func serveFile(w http.ResponseWriter, r *http.Request, name, mimeType string, f *os.File) {
 	defer func() { _ = f.Close() }()
 	info, err := f.Stat()
 	if err != nil {
@@ -305,7 +434,88 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 		return
 	}
 	w.Header().Set("Content-Type", mimeType)
-	http.ServeContent(w, r, cacheKey, info.ModTime(), f)
+	http.ServeContent(w, r, name, info.ModTime(), f)
+}
+
+// joinFlight returns the in-progress flight for cacheKey, or registers a
+// new one, in which case leader is true and the caller must eventually
+// call finishFlight.
+func (s *Server) joinFlight(cacheKey string) (fl *flight, leader bool) {
+	s.flightsMu.Lock()
+	defer s.flightsMu.Unlock()
+	if fl, ok := s.flights[cacheKey]; ok {
+		return fl, false
+	}
+	fl = &flight{done: make(chan struct{}), video: make(chan struct{})}
+	s.flights[cacheKey] = fl
+	return fl, true
+}
+
+func (s *Server) finishFlight(cacheKey string, fl *flight) {
+	s.flightsMu.Lock()
+	delete(s.flights, cacheKey)
+	s.flightsMu.Unlock()
+	close(fl.done)
+}
+
+// fillCacheInBackground finishes downloading a video into the cache after
+// the request that started it has moved on to proxying (see serveMedia).
+// It's detached from that request, so a TV that stops playback early or
+// only probed the first few bytes still ends up with the video cached;
+// a stalled download still aborts via the client's stall timeout.
+func (s *Server) fillCacheInBackground(cacheKey, mimeType string, body io.ReadCloser, fl *flight, cancel context.CancelFunc) {
+	defer cancel()
+	defer s.finishFlight(cacheKey, fl)
+	defer func() { _ = body.Close() }()
+
+	f, err := s.cache.Put(cacheKey, mimeType, body)
+	if err != nil {
+		log.Printf("cache: background fill of %s failed: %v", cacheKey, err)
+		return
+	}
+	_ = f.Close()
+	debugf("cache: background fill of %s complete", cacheKey)
+}
+
+// proxyRange serves a request for a video that isn't (yet) cached by
+// proxying it straight through to Immich, forwarding the client's Range
+// header and relaying the status and the headers a player needs to seek.
+// Without this, playback of an uncached video could only start once the
+// whole file had been downloaded - long enough for many TVs to give up.
+func (s *Server) proxyRange(w http.ResponseWriter, r *http.Request, cacheKey string, src mediaSource) {
+	resp, err := src.openRange(r.Context(), r.Header.Get("Range"))
+	if err != nil {
+		upstreamError(w, cacheKey, err)
+		return
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	for _, h := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "Last-Modified"} {
+		if v := resp.Header.Get(h); v != "" {
+			w.Header().Set(h, v)
+		}
+	}
+	if w.Header().Get("Accept-Ranges") == "" {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
+	w.WriteHeader(resp.StatusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		debugf("proxy %s: %v", cacheKey, err)
+	}
+}
+
+// upstreamError answers a failed Immich fetch: 404 when Immich says the
+// object doesn't exist (or isn't visible to this API key), 502 otherwise.
+func upstreamError(w http.ResponseWriter, cacheKey string, err error) {
+	log.Printf("fetch(%s) failed: %v", cacheKey, err)
+	if immich.IsNotFound(err) {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	http.Error(w, "upstream error", http.StatusBadGateway)
 }
 
 // isVideoMimeType reports whether mimeType (as returned by Immich's
@@ -314,75 +524,24 @@ func isVideoMimeType(mimeType string) bool {
 	return strings.HasPrefix(mimeType, "video/")
 }
 
-// serveVideo streams a video asset from Immich. Unlike photos, videos are
-// never buffered into memory or decoded - there's no orientation/resize
-// step for them, and they can be gigabytes in size, so buffering the
-// whole thing first (as the photo path does, to support decode-based
-// transforms) isn't practical. On a cache miss, it's written straight to
-// disk via cache.Put and then served from there, so Range requests (which
-// TVs rely on to seek during playback) work the same way a cache hit
-// does. With caching disabled, it's copied directly to the response
-// instead, which can't support Range - an accepted trade-off for that
-// already-opt-out, streaming-for-debugging mode.
-func (s *Server) serveVideo(w http.ResponseWriter, r *http.Request, cacheKey, mimeType string, body io.ReadCloser) {
-	defer func() { _ = body.Close() }()
-
+// serveStream serves bytes that shouldn't be buffered into memory,
+// writing them through the cache (and serving from there, so Range
+// works) or, with caching disabled, copying them straight to the client.
+func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, cacheKey, mimeType string, body io.Reader) {
 	if s.cache == nil {
 		w.Header().Set("Content-Type", mimeType)
 		if _, err := io.Copy(w, body); err != nil {
-			log.Printf("stream video %s failed: %v", cacheKey, err)
+			log.Printf("stream %s failed: %v", cacheKey, err)
 		}
 		return
 	}
-
-	path, err := s.cache.Put(cacheKey, mimeType, body)
+	f, err := s.cache.Put(cacheKey, mimeType, body)
 	if err != nil {
 		log.Printf("cache: put(%s) failed: %v", cacheKey, err)
 		http.Error(w, "cache error", http.StatusInternalServerError)
 		return
 	}
-
-	f, err := os.Open(path)
-	if err != nil {
-		log.Printf("cache: open(%s) failed: %v", path, err)
-		http.Error(w, "cache error", http.StatusInternalServerError)
-		return
-	}
-	defer func() { _ = f.Close() }()
-	info, err := f.Stat()
-	if err != nil {
-		http.Error(w, "cache error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", mimeType)
-	http.ServeContent(w, r, cacheKey, info.ModTime(), f)
-}
-
-// handleThumbnail proxies Immich's generated preview-sized thumbnail for
-// an asset. It's used for video items' albumArtURI (see buildItem) - a
-// video's own bytes can't double as an image preview the way a photo's
-// can. Thumbnails are small and cheap for Immich to regenerate, so unlike
-// /media, this isn't cached.
-func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
-	userIdx, assetID, ok := parseMediaPath(strings.TrimPrefix(r.URL.Path, "/thumbnail/"), len(s.users))
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	client := s.users[userIdx].Client
-
-	body, mimeType, err := client.GetAssetThumbnail(r.Context(), assetID)
-	if err != nil {
-		log.Printf("GetAssetThumbnail(%s) failed: %v", assetID, err)
-		http.Error(w, "upstream error", http.StatusBadGateway)
-		return
-	}
-	defer func() { _ = body.Close() }()
-
-	w.Header().Set("Content-Type", mimeType)
-	if _, err := io.Copy(w, body); err != nil {
-		log.Printf("stream thumbnail(%s) failed: %v", assetID, err)
-	}
+	serveFile(w, r, cacheKey, mimeType, f)
 }
 
 // fixOrientation normalizes EXIF orientation (see imageproc.FixOrientation)
@@ -396,7 +555,7 @@ func (s *Server) fixOrientation(assetID string, data []byte) []byte {
 		return data
 	}
 	if changed {
-		log.Printf("normalized EXIF orientation for %s", assetID)
+		debugf("normalized EXIF orientation for %s", assetID)
 	}
 	return out
 }
@@ -415,7 +574,7 @@ func (s *Server) maybeResize(assetID string, data []byte) []byte {
 		return data
 	}
 	if resized {
-		log.Printf("resized %s: %d -> %d bytes (max %dx%d)", assetID, len(data), len(out), s.cfg.MaxWidth, s.cfg.MaxHeight)
+		debugf("resized %s: %d -> %d bytes (max %dx%d)", assetID, len(data), len(out), s.cfg.MaxWidth, s.cfg.MaxHeight)
 	}
 	return out
 }
