@@ -363,12 +363,12 @@ func TestBrowseMultiUserVideoThumbnailURLIsUserScoped(t *testing.T) {
 	}
 }
 
-func TestBrowseUnknownUserIndexReturns404(t *testing.T) {
+func TestBrowseUnknownUserIndexReturnsNoSuchObject(t *testing.T) {
 	ts := newTestServerWithMultiUserFakeImmich(t)
 
-	resp := browseExpectStatus(t, ts, "user:5", "BrowseDirectChildren", http.StatusNotFound)
-	if !strings.Contains(resp, "unknown object") {
-		t.Errorf("expected 'unknown object' error, got: %s", resp)
+	resp := browseExpectStatus(t, ts, "user:5", "BrowseDirectChildren", http.StatusInternalServerError)
+	if !strings.Contains(resp, "<errorCode>701</errorCode>") {
+		t.Errorf("expected UPnP error 701 (No such object), got: %s", resp)
 	}
 }
 
@@ -378,9 +378,9 @@ func TestBrowseUnknownUserIndexReturns404(t *testing.T) {
 func TestBrowseRejectsInvalidIDs(t *testing.T) {
 	ts := newTestServerWithFakeImmich(t)
 	for _, objectID := range []string{"album:../users", "person:a%2Fb", "asset:..", "album:", "user:0:asset:a?b"} {
-		resp := browseExpectStatus(t, ts, objectID, "BrowseDirectChildren", http.StatusNotFound)
-		if !strings.Contains(resp, "unknown object") {
-			t.Errorf("%s: expected 'unknown object' error, got: %s", objectID, resp)
+		resp := browseExpectStatus(t, ts, objectID, "BrowseDirectChildren", http.StatusInternalServerError)
+		if !strings.Contains(resp, "<errorCode>701</errorCode>") {
+			t.Errorf("%s: expected UPnP error 701 (No such object), got: %s", objectID, resp)
 		}
 	}
 }
@@ -752,12 +752,12 @@ func TestBrowseHonorsSortCriteriaOnPersonPhotosByDate(t *testing.T) {
 	}
 }
 
-func TestBrowseUnknownObjectReturns404(t *testing.T) {
+func TestBrowseUnknownObjectReturnsNoSuchObject(t *testing.T) {
 	ts := newTestServerWithFakeImmich(t)
 
-	resp := browseExpectStatus(t, ts, "not-a-real-object", "BrowseDirectChildren", http.StatusNotFound)
-	if !strings.Contains(resp, "unknown object") {
-		t.Errorf("expected 'unknown object' error, got: %s", resp)
+	resp := browseExpectStatus(t, ts, "not-a-real-object", "BrowseDirectChildren", http.StatusInternalServerError)
+	if !strings.Contains(resp, "<errorCode>701</errorCode>") {
+		t.Errorf("expected UPnP error 701 (No such object), got: %s", resp)
 	}
 }
 
@@ -821,7 +821,7 @@ func newTestServerWithFailingImmich(t *testing.T) (srvURL string) {
 	return ts.URL
 }
 
-func TestBrowseUpstreamErrorsReturn502(t *testing.T) {
+func TestBrowseUpstreamErrorsReturnActionFailed(t *testing.T) {
 	ts := newTestServerWithFailingImmich(t)
 
 	cases := []struct {
@@ -843,9 +843,9 @@ func TestBrowseUpstreamErrorsReturn502(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			resp := browseExpectStatus(t, ts, c.objectID, c.flag, http.StatusBadGateway)
-			if !strings.Contains(resp, "upstream error") {
-				t.Errorf("expected 'upstream error', got: %s", resp)
+			resp := browseExpectStatus(t, ts, c.objectID, c.flag, http.StatusInternalServerError)
+			if !strings.Contains(resp, "<errorCode>501</errorCode>") {
+				t.Errorf("expected UPnP error 501 (Action Failed), got: %s", resp)
 			}
 		})
 	}
@@ -1097,4 +1097,34 @@ func equalInts(a, b []int) bool {
 		}
 	}
 	return true
+}
+
+// Immich answering 404 for an object (deleted album, stale TV cache) is a
+// "701 No such object", not a generic failure.
+func TestBrowseImmichNotFoundReturnsNoSuchObject(t *testing.T) {
+	fakeImmich := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(fakeImmich.Close)
+	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"k"}, FriendlyName: "Test"}
+	ts := httptest.NewServer(NewServer(cfg, []UserClient{{Client: immich.New(fakeImmich.URL, "k")}}, nil).Mux())
+	t.Cleanup(ts.Close)
+
+	resp := browseExpectStatus(t, ts.URL, "album:gone", "BrowseDirectChildren", http.StatusInternalServerError)
+	if !strings.Contains(resp, "<errorCode>701</errorCode>") {
+		t.Errorf("expected UPnP error 701, got: %s", resp)
+	}
+}
+
+func TestSOAPBodyTooLargeIsRejected(t *testing.T) {
+	ts := httptest.NewServer(newTestServer(t).Mux())
+	t.Cleanup(ts.Close)
+	for _, path := range []string{"/ctl/ContentDirectory", "/ctl/ConnectionManager", "/ctl/X_MS_MediaReceiverRegistrar"} {
+		resp, err := http.Post(ts.URL+path, "text/xml", strings.NewReader(strings.Repeat("x", maxSOAPBodyBytes+1)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s: status = %d, want 413", path, resp.StatusCode)
+		}
+	}
 }

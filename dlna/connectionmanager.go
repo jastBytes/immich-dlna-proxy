@@ -2,7 +2,6 @@ package dlna
 
 import (
 	"encoding/xml"
-	"io"
 	"net/http"
 )
 
@@ -22,9 +21,8 @@ type cmBody struct {
 const cmNS = "urn:schemas-upnp-org:service:ConnectionManager:1"
 
 func (s *Server) handleConnectionManagerControl(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	raw, ok := readSOAPBody(w, r)
+	if !ok {
 		return
 	}
 

@@ -57,9 +57,8 @@ type searchArgs struct {
 const cdNS = "urn:schemas-upnp-org:service:ContentDirectory:1"
 
 func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	raw, ok := readSOAPBody(w, r)
+	if !ok {
 		return
 	}
 
@@ -102,18 +101,19 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 
 	var didl string
 	var returned, total int
-	var ok bool
+	var err error
 
 	if len(s.users) > 1 {
-		didl, returned, total, ok = s.browseMultiUser(w, objectID, args, baseURL)
+		didl, returned, total, err = s.browseMultiUser(objectID, args, baseURL)
 	} else {
 		// Single configured account: browse exactly as if it were the only
 		// thing that ever existed - no "user:<idx>" folder level, and
 		// /media/, /thumbnail/ URLs keep their original /media/{assetID}
 		// shape (userIdx -1, see mediaURL).
-		didl, returned, total, ok = s.browseUserScope(w, s.users[0].Client, -1, "", objectID, s.cfg.FriendlyName, "-1", "0", args, baseURL)
+		didl, returned, total, err = s.browseUserScope(s.users[0].Client, -1, "", objectID, s.cfg.FriendlyName, "-1", "0", args, baseURL)
 	}
-	if !ok {
+	if err != nil {
+		writeBrowseError(w, objectID, err)
 		return
 	}
 
@@ -143,10 +143,10 @@ func isAssetObjectID(objectID string) bool {
 // configured account (named via UserClient.Name, fetched from Immich at
 // startup - see main.go), and "user:<idx>[:<local>]" descends into that
 // account's own albums/people/timeline tree via browseUserScope.
-func (s *Server) browseMultiUser(w http.ResponseWriter, objectID string, args *browseArgs, baseURL string) (didl string, returned, total int, ok bool) {
+func (s *Server) browseMultiUser(objectID string, args *browseArgs, baseURL string) (didl string, returned, total int, err error) {
 	switch {
 	case objectID == "0" && args.BrowseFlag == "BrowseMetadata":
-		return wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, len(s.users), "")), 1, 1, true
+		return wrapDIDL(buildContainer("0", "-1", s.cfg.FriendlyName, len(s.users), "")), 1, 1, nil
 
 	case objectID == "0": // BrowseDirectChildren on root: one folder per configured account
 		fragments := make([]string, len(s.users))
@@ -155,20 +155,18 @@ func (s *Server) browseMultiUser(w http.ResponseWriter, objectID string, args *b
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
-		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, true
+		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, nil
 
 	case strings.HasPrefix(objectID, "user:"):
 		idx, local, valid := parseUserObjectID(objectID, len(s.users))
 		if !valid {
-			http.Error(w, "unknown object", http.StatusNotFound)
-			return "", 0, 0, false
+			return "", 0, 0, errNoSuchObject
 		}
 		user := s.users[idx]
-		return s.browseUserScope(w, user.Client, idx, "user:"+strconv.Itoa(idx)+":", local, user.Name, "0", userObjectID(idx), args, baseURL)
+		return s.browseUserScope(user.Client, idx, "user:"+strconv.Itoa(idx)+":", local, user.Name, "0", userObjectID(idx), args, baseURL)
 
 	default:
-		http.Error(w, "unknown object", http.StatusNotFound)
-		return "", 0, 0, false
+		return "", 0, 0, errNoSuchObject
 	}
 }
 
@@ -212,23 +210,19 @@ func parseUserObjectID(objectID string, numUsers int) (idx int, local string, ok
 // to fetch with (-1 for the single-user case, which keeps the original
 // URL shapes). rootSelfID/rootParentID/rootTitle describe how local=="0"
 // renders itself under BrowseMetadata.
-func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, ok bool) {
+func (s *Server) browseUserScope(client *immich.Client, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, err error) {
 	switch {
 	case local == "0" && args.BrowseFlag == "BrowseMetadata":
-		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, 3, "")), 1, 1, true
+		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, 3, "")), 1, 1, nil
 
 	case local == "0": // BrowseDirectChildren on this account's root: fixed "Albums" / "People" / "Timeline" folders
 		albums, err := client.ListAlbums()
 		if err != nil {
-			log.Printf("ListAlbums failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListAlbums: %w", err)
 		}
 		people, err := client.ListPeople()
 		if err != nil {
-			log.Printf("ListPeople failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListPeople: %w", err)
 		}
 		namedPeople := countNamedPeople(people)
 
@@ -242,23 +236,19 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
-		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, true
+		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, nil
 
 	case local == "albums" && args.BrowseFlag == "BrowseMetadata":
 		albums, err := client.ListAlbums()
 		if err != nil {
-			log.Printf("ListAlbums failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListAlbums: %w", err)
 		}
-		return wrapDIDL(buildContainer(childPrefix+"albums", rootSelfID, "Albums", len(albums), "")), 1, 1, true
+		return wrapDIDL(buildContainer(childPrefix+"albums", rootSelfID, "Albums", len(albums), "")), 1, 1, nil
 
 	case local == "albums": // BrowseDirectChildren: list albums
 		albums, err := client.ListAlbums()
 		if err != nil {
-			log.Printf("ListAlbums failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListAlbums: %w", err)
 		}
 		sortByTitle(albums, func(a immich.Album) string { return a.AlbumName }, parseSortCriteria(args.SortCriteria))
 		total = len(albums)
@@ -267,23 +257,19 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		for _, a := range paged {
 			b.WriteString(buildContainer(childPrefix+"album:"+a.ID, childPrefix+"albums", a.AlbumName, a.AssetCount, albumArtURI(baseURL, userIdx, a.AlbumThumbnailAssetID)))
 		}
-		return wrapDIDL(b.String()), len(paged), total, true
+		return wrapDIDL(b.String()), len(paged), total, nil
 
 	case local == "people" && args.BrowseFlag == "BrowseMetadata":
 		people, err := client.ListPeople()
 		if err != nil {
-			log.Printf("ListPeople failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListPeople: %w", err)
 		}
-		return wrapDIDL(buildContainer(childPrefix+"people", rootSelfID, "People", countNamedPeople(people), "")), 1, 1, true
+		return wrapDIDL(buildContainer(childPrefix+"people", rootSelfID, "People", countNamedPeople(people), "")), 1, 1, nil
 
 	case local == "people": // BrowseDirectChildren: list named people
 		people, err := client.ListPeople()
 		if err != nil {
-			log.Printf("ListPeople failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListPeople: %w", err)
 		}
 		named := make([]immich.Person, 0, len(people))
 		for _, p := range people {
@@ -301,18 +287,16 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 			// libraries with many tagged people.
 			b.WriteString(buildContainer(childPrefix+"person:"+p.ID, childPrefix+"people", p.Name, -1, personArtURI(baseURL, userIdx, p)))
 		}
-		return wrapDIDL(b.String()), len(paged), total, true
+		return wrapDIDL(b.String()), len(paged), total, nil
 
 	case local == "timeline" && args.BrowseFlag == "BrowseMetadata":
 		// childCount omitted (-1): see the root listing above for why.
-		return wrapDIDL(buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, "")), 1, 1, true
+		return wrapDIDL(buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, "")), 1, 1, nil
 
 	case local == "timeline": // BrowseDirectChildren: every photo/video, newest first
 		assets, err := client.ListTimelineAssets()
 		if err != nil {
-			log.Printf("ListTimelineAssets failed: %v", err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("ListTimelineAssets: %w", err)
 		}
 		media := filterSupportedAssets(assets)
 		sortPhotos(media, parseSortCriteria(args.SortCriteria))
@@ -322,30 +306,25 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		for _, a := range paged {
 			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
 		}
-		return wrapDIDL(b.String()), len(paged), total, true
+		return wrapDIDL(b.String()), len(paged), total, nil
 
 	case strings.HasPrefix(local, "album:"):
 		albumID := strings.TrimPrefix(local, "album:")
 		if !immich.ValidID(albumID) {
-			http.Error(w, "unknown object", http.StatusNotFound)
-			return "", 0, 0, false
+			return "", 0, 0, errNoSuchObject
 		}
 		album, err := client.GetAlbum(albumID)
 		if err != nil {
-			log.Printf("GetAlbum(%s) failed: %v", albumID, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("GetAlbum(%s): %w", albumID, err)
 		}
 		assets, err := client.GetAlbumAssets(albumID)
 		if err != nil {
-			log.Printf("GetAlbumAssets(%s) failed: %v", albumID, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("GetAlbumAssets(%s): %w", albumID, err)
 		}
 		media := filterSupportedAssets(assets)
 
 		if args.BrowseFlag == "BrowseMetadata" {
-			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"albums", album.AlbumName, len(media), albumArtURI(baseURL, userIdx, album.AlbumThumbnailAssetID))), 1, 1, true
+			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"albums", album.AlbumName, len(media), albumArtURI(baseURL, userIdx, album.AlbumThumbnailAssetID))), 1, 1, nil
 		}
 		sortPhotos(media, parseSortCriteria(args.SortCriteria))
 		total = len(media)
@@ -354,29 +333,24 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		for _, a := range paged {
 			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
 		}
-		return wrapDIDL(b.String()), len(paged), total, true
+		return wrapDIDL(b.String()), len(paged), total, nil
 
 	case strings.HasPrefix(local, "person:"):
 		personID := strings.TrimPrefix(local, "person:")
 		if !immich.ValidID(personID) {
-			http.Error(w, "unknown object", http.StatusNotFound)
-			return "", 0, 0, false
+			return "", 0, 0, errNoSuchObject
 		}
 
 		if args.BrowseFlag == "BrowseMetadata" {
 			person, err := client.GetPerson(personID)
 			if err != nil {
-				log.Printf("GetPerson(%s) failed: %v", personID, err)
-				http.Error(w, "upstream error", http.StatusBadGateway)
-				return "", 0, 0, false
+				return "", 0, 0, fmt.Errorf("GetPerson(%s): %w", personID, err)
 			}
-			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"people", person.Name, -1, personArtURI(baseURL, userIdx, *person))), 1, 1, true
+			return wrapDIDL(buildContainer(childPrefix+local, childPrefix+"people", person.Name, -1, personArtURI(baseURL, userIdx, *person))), 1, 1, nil
 		}
 		assets, err := client.GetPersonAssets(personID)
 		if err != nil {
-			log.Printf("GetPersonAssets(%s) failed: %v", personID, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("GetPersonAssets(%s): %w", personID, err)
 		}
 		media := filterSupportedAssets(assets)
 		sortPhotos(media, parseSortCriteria(args.SortCriteria))
@@ -386,25 +360,21 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 		for _, a := range paged {
 			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
 		}
-		return wrapDIDL(b.String()), len(paged), total, true
+		return wrapDIDL(b.String()), len(paged), total, nil
 
 	case strings.HasPrefix(local, "asset:"):
 		assetID := strings.TrimPrefix(local, "asset:")
 		if !immich.ValidID(assetID) {
-			http.Error(w, "unknown object", http.StatusNotFound)
-			return "", 0, 0, false
+			return "", 0, 0, errNoSuchObject
 		}
 		asset, err := client.GetAsset(assetID)
 		if err != nil {
-			log.Printf("GetAsset(%s) failed: %v", assetID, err)
-			http.Error(w, "upstream error", http.StatusBadGateway)
-			return "", 0, 0, false
+			return "", 0, 0, fmt.Errorf("GetAsset(%s): %w", assetID, err)
 		}
-		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending)), 1, 1, true
+		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending)), 1, 1, nil
 
 	default:
-		http.Error(w, "unknown object", http.StatusNotFound)
-		return "", 0, 0, false
+		return "", 0, 0, errNoSuchObject
 	}
 }
 
@@ -661,6 +631,12 @@ func writeSoapResponse(w http.ResponseWriter, serviceNS, actionResponseName stri
 // http.ResponseWriter offers no way to do this, so the connection is
 // hijacked and the response written by hand.
 func writeRawUPnPResponse(w http.ResponseWriter, body string) {
+	writeRawUPnPResponseStatus(w, http.StatusOK, body)
+}
+
+// writeRawUPnPResponseStatus is writeRawUPnPResponse with a status other
+// than 200 (SOAP faults are sent as 500).
+func writeRawUPnPResponseStatus(w http.ResponseWriter, status int, body string) {
 	hj, ok := w.(http.Hijacker)
 	conn, buf, err := func() (net.Conn, *bufio.ReadWriter, error) {
 		if !ok {
@@ -672,19 +648,20 @@ func writeRawUPnPResponse(w http.ResponseWriter, body string) {
 		// Not every ResponseWriter supports hijacking (e.g. httptest's
 		// ResponseRecorder in tests) - fall back to a normal response.
 		w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
+		w.WriteHeader(status)
 		_, _ = io.WriteString(w, body)
 		return
 	}
 	defer func() { _ = conn.Close() }()
 
-	if _, err := fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\n"+
+	if _, err := fmt.Fprintf(buf, "HTTP/1.1 %d %s\r\n"+
 		"Content-Type: text/xml; charset=\"utf-8\"\r\n"+
 		"Connection: close\r\n"+
 		"Content-Length: %d\r\n"+
 		"Server: Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0\r\n"+
 		"Date: %s\r\n"+
 		"EXT:\r\n\r\n%s",
-		len(body), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
+		status, http.StatusText(status), len(body), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
 		return
 	}
 	_ = buf.Flush()
