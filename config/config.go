@@ -82,6 +82,12 @@ type Config struct {
 	// separately (CacheDir) and unaffected.
 	ListingCacheTTL time.Duration
 
+	// TimelineGrouping controls how the Timeline folder is organized:
+	// "none" (default) lists every photo/video flat, newest first; "year"
+	// adds one folder per year; "month" adds year folders containing one
+	// folder per month. Set via TIMELINE_GROUPING.
+	TimelineGrouping string
+
 	// Debug enables verbose logging (DEBUG=true): every /media/ and
 	// /thumbnail/ request, per-photo orientation/resize notes, and
 	// background cache fills. Off by default because a TV scrolling
@@ -138,6 +144,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("LISTING_CACHE_SECONDS must be a non-negative integer, got %q", listingTTL)
 	}
 	cfg.ListingCacheTTL = time.Duration(secs) * time.Second
+
+	cfg.TimelineGrouping = strings.ToLower(getEnvDefault("TIMELINE_GROUPING", "none"))
+	switch cfg.TimelineGrouping {
+	case "none", "year", "month":
+	default:
+		return nil, fmt.Errorf(`TIMELINE_GROUPING must be "none", "year" or "month", got %q`, os.Getenv("TIMELINE_GROUPING"))
+	}
 
 	cfg.TitleDatePrefix = os.Getenv("TITLE_DATE_PREFIX") == "true"
 	cfg.TitleDatePrefixDescending = os.Getenv("TITLE_DATE_PREFIX_DESC") == "true"

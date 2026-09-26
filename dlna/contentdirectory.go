@@ -290,24 +290,8 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		}
 		return wrapDIDL(b.String()), len(paged), total, nil
 
-	case local == "timeline" && args.BrowseFlag == "BrowseMetadata":
-		// childCount omitted (-1): see the root listing above for why.
-		return wrapDIDL(buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, "")), 1, 1, nil
-
-	case local == "timeline": // BrowseDirectChildren: every photo/video, newest first
-		assets, err := client.ListTimelineAssets()
-		if err != nil {
-			return "", 0, 0, fmt.Errorf("ListTimelineAssets: %w", err)
-		}
-		media := filterSupportedAssets(assets)
-		sortPhotos(media, parseSortCriteria(args.SortCriteria))
-		total = len(media)
-		paged := page(media, args.StartingIndex, args.RequestedCount)
-		var b strings.Builder
-		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+"timeline", a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
-		}
-		return wrapDIDL(b.String()), len(paged), total, nil
+	case local == "timeline", strings.HasPrefix(local, "timeline:"):
+		return s.browseTimeline(client, userIdx, childPrefix, local, rootSelfID, args, baseURL)
 
 	case strings.HasPrefix(local, "album:"):
 		albumID := strings.TrimPrefix(local, "album:")
