@@ -661,3 +661,50 @@ func TestDownloadAbortsWhenContextCancelled(t *testing.T) {
 		t.Fatal("cancelled download kept running")
 	}
 }
+
+func TestOpenOriginalRangeForwardsRangeAndRelaysPartialContent(t *testing.T) {
+	var gotRange string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotRange = r.Header.Get("Range")
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "v.mp4", time.Unix(0, 0), strings.NewReader("0123456789"))
+	}))
+	defer ts.Close()
+
+	resp, err := New(ts.URL, "k").OpenOriginalRange(context.Background(), "a1", "bytes=3-5")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if gotRange != "bytes=3-5" {
+		t.Errorf("forwarded Range = %q", gotRange)
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Errorf("status = %d, want 206", resp.StatusCode)
+	}
+	if b, _ := io.ReadAll(resp.Body); string(b) != "345" {
+		t.Errorf("body = %q", b)
+	}
+}
+
+func TestIsNotFound(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "missing") {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer ts.Close()
+	c := New(ts.URL, "k")
+
+	if _, err := c.GetAlbum("missing"); !IsNotFound(err) {
+		t.Errorf("GetAlbum(missing): IsNotFound(%v) = false", err)
+	}
+	if _, err := c.GetAlbum("broken"); err == nil || IsNotFound(err) {
+		t.Errorf("GetAlbum(broken): err = %v, want a non-not-found error", err)
+	}
+	if _, _, err := c.DownloadOriginal(context.Background(), "missing"); !IsNotFound(err) {
+		t.Errorf("DownloadOriginal(missing): IsNotFound(%v) = false", err)
+	}
+}

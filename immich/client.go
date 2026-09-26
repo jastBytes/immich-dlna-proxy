@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -91,58 +93,85 @@ func idPath(id string) string {
 	return url.PathEscape(id)
 }
 
-func (c *Client) newRequest(method, path string) (*http.Request, error) {
-	return c.newRequestWithContext(context.Background(), method, path)
+// StatusError is returned when Immich answers with an unexpected HTTP
+// status. Callers can use errors.As (or IsNotFound) to tell "this object
+// doesn't exist / isn't visible to this API key" apart from Immich being
+// down or misbehaving.
+type StatusError struct {
+	Op         string // e.g. "GetAlbum(abc)"
+	StatusCode int
+	Status     string
 }
 
-func (c *Client) newRequestWithContext(ctx context.Context, method, path string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, nil)
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("immich %s: unexpected status %s", e.Op, e.Status)
+}
+
+// IsNotFound reports whether err is Immich answering 404 (or 400, which
+// Immich returns for a syntactically invalid UUID) for the requested
+// object.
+func IsNotFound(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se) && (se.StatusCode == http.StatusNotFound || se.StatusCode == http.StatusBadRequest)
+}
+
+func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("x-api-key", c.APIKey)
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	return req, nil
+}
+
+// doJSON performs a JSON API call via c.HTTP and decodes a 200 response
+// into out. reqBody, if non-nil, is marshalled as the JSON request body.
+// op names the call in error messages.
+func (c *Client) doJSON(method, path string, reqBody any, out any, op string) error {
+	var body io.Reader
+	if reqBody != nil {
+		b, err := json.Marshal(reqBody)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := c.newRequest(context.Background(), method, path, body)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return &StatusError{Op: op, StatusCode: resp.StatusCode, Status: resp.Status}
+	}
+	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// getJSON is doJSON for a body-less GET, returning the decoded value.
+func getJSON[T any](c *Client, path, op string) (T, error) {
+	var out T
+	err := c.doJSON(http.MethodGet, path, nil, &out, op)
+	return out, err
 }
 
 // ListAlbums returns all albums visible to the API key's owner.
 func (c *Client) ListAlbums() ([]Album, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/albums")
-	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich ListAlbums: unexpected status %s", resp.Status)
-	}
-	var albums []Album
-	if err := json.NewDecoder(resp.Body).Decode(&albums); err != nil {
-		return nil, err
-	}
-	return albums, nil
+	return getJSON[[]Album](c, "/api/albums", "ListAlbums")
 }
 
 // GetAlbum returns the album's own metadata (name, asset count, etc.) but
 // not its assets - see GetAlbumAssets for those.
 func (c *Client) GetAlbum(id string) (*Album, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/albums/"+idPath(id))
+	album, err := getJSON[Album](c, "/api/albums/"+idPath(id), "GetAlbum("+id+")")
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich GetAlbum(%s): unexpected status %s", id, resp.Status)
-	}
-	var album Album
-	if err := json.NewDecoder(resp.Body).Decode(&album); err != nil {
 		return nil, err
 	}
 	return &album, nil
@@ -157,20 +186,8 @@ func (c *Client) GetAlbumAssets(albumID string) ([]Asset, error) {
 // excluding hidden people; we filter to named ones ourselves since Immich
 // also returns unconfirmed/unnamed face clusters here).
 func (c *Client) ListPeople() ([]Person, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/people")
+	out, err := getJSON[PeopleResponse](c, "/api/people", "ListPeople")
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich ListPeople: unexpected status %s", resp.Status)
-	}
-	var out PeopleResponse
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return nil, err
 	}
 	return out.People, nil
@@ -178,20 +195,8 @@ func (c *Client) ListPeople() ([]Person, error) {
 
 // GetPerson returns metadata for a single person.
 func (c *Client) GetPerson(id string) (*Person, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/people/"+idPath(id))
+	person, err := getJSON[Person](c, "/api/people/"+idPath(id), "GetPerson("+id+")")
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich GetPerson(%s): unexpected status %s", id, resp.Status)
-	}
-	var person Person
-	if err := json.NewDecoder(resp.Body).Decode(&person); err != nil {
 		return nil, err
 	}
 	return &person, nil
@@ -225,35 +230,13 @@ func (c *Client) searchMetadataAssets(filter map[string]any) ([]Asset, error) {
 	var all []Asset
 	page := 1
 	for {
-		reqBody, err := json.Marshal(mergePage(filter, page))
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequest(http.MethodPost, c.BaseURL+"/api/search/metadata", bytes.NewReader(reqBody))
-		if err != nil {
-			return nil, err
-		}
-		req.Header.Set("x-api-key", c.APIKey)
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := c.HTTP.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			_ = resp.Body.Close()
-			return nil, fmt.Errorf("immich searchMetadata(%v): unexpected status %s", filter, resp.Status)
-		}
 		var out struct {
 			Assets struct {
 				Items    []Asset `json:"items"`
 				NextPage *string `json:"nextPage"`
 			} `json:"assets"`
 		}
-		err = json.NewDecoder(resp.Body).Decode(&out)
-		_ = resp.Body.Close()
-		if err != nil {
+		if err := c.doJSON(http.MethodPost, "/api/search/metadata", mergePage(filter, page), &out, fmt.Sprintf("searchMetadata(%v)", filter)); err != nil {
 			return nil, err
 		}
 		all = append(all, out.Assets.Items...)
@@ -284,20 +267,8 @@ func mergePage(filter map[string]any, page int) map[string]any {
 // GET /api/users/me) - used to label the top-level per-user folder when
 // more than one IMMICH_API_KEYS entry is configured.
 func (c *Client) GetMyUser() (*User, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/users/me")
+	user, err := getJSON[User](c, "/api/users/me", "GetMyUser")
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich GetMyUser: unexpected status %s", resp.Status)
-	}
-	var user User
-	if err := json.NewDecoder(resp.Body).Decode(&user); err != nil {
 		return nil, err
 	}
 	return &user, nil
@@ -307,20 +278,8 @@ func (c *Client) GetMyUser() (*User, error) {
 // before streaming it, if the caller doesn't already have that from the
 // album listing).
 func (c *Client) GetAsset(id string) (*Asset, error) {
-	req, err := c.newRequest(http.MethodGet, "/api/assets/"+idPath(id))
+	asset, err := getJSON[Asset](c, "/api/assets/"+idPath(id), "GetAsset("+id+")")
 	if err != nil {
-		return nil, err
-	}
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("immich GetAsset(%s): unexpected status %s", id, resp.Status)
-	}
-	var asset Asset
-	if err := json.NewDecoder(resp.Body).Decode(&asset); err != nil {
 		return nil, err
 	}
 	return &asset, nil
@@ -342,34 +301,65 @@ func (c *Client) DownloadOriginal(ctx context.Context, assetID string) (body io.
 	return c.stream(ctx, "DownloadOriginal("+assetID+")", "/api/assets/"+idPath(assetID)+"/original")
 }
 
-// stream performs a binary GET against path via c.Stream, returning the
-// response body (wrapped so a stalled read aborts after stallTimeout) and
-// its Content-Type, defaulting to image/jpeg if Immich didn't send one.
-// Cancelling ctx (e.g. the DLNA client hung up) aborts the download. The
-// caller must close the returned body.
-func (c *Client) stream(ctx context.Context, what, path string) (io.ReadCloser, string, error) {
-	ctx, cancel := context.WithCancel(ctx)
-	req, err := c.newRequestWithContext(ctx, http.MethodGet, path)
-	if err != nil {
-		cancel()
-		return nil, "", err
+// OpenOriginalRange requests an asset's original bytes with the given
+// Range header value forwarded as-is (empty means the whole file), for
+// proxying a DLNA client's (seeking) request straight through to Immich.
+// Unlike DownloadOriginal, it returns the raw response so the caller can
+// relay the status (200, 206 or 416) and headers such as Content-Range.
+// Any other status is returned as a *StatusError. The caller must close
+// the response body, which aborts after a stall the same way
+// DownloadOriginal's does.
+func (c *Client) OpenOriginalRange(ctx context.Context, assetID, rangeHeader string) (*http.Response, error) {
+	var header http.Header
+	if rangeHeader != "" {
+		header = http.Header{"Range": {rangeHeader}}
 	}
-	resp, err := c.Stream.Do(req)
-	if err != nil {
-		cancel()
-		return nil, "", err
-	}
-	if resp.StatusCode != http.StatusOK {
-		_ = resp.Body.Close()
-		cancel()
-		return nil, "", fmt.Errorf("immich %s: unexpected status %s", what, resp.Status)
-	}
+	return c.open(ctx, "OpenOriginalRange("+assetID+")", "/api/assets/"+idPath(assetID)+"/original", header,
+		http.StatusOK, http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable)
+}
 
+// stream performs a binary GET against path via c.Stream, returning the
+// response body and its Content-Type, defaulting to image/jpeg if Immich
+// didn't send one. The caller must close the returned body.
+func (c *Client) stream(ctx context.Context, op, path string) (io.ReadCloser, string, error) {
+	resp, err := c.open(ctx, op, path, nil, http.StatusOK)
+	if err != nil {
+		return nil, "", err
+	}
 	mimeType := resp.Header.Get("Content-Type")
 	if mimeType == "" {
 		mimeType = "image/jpeg"
 	}
-	return newStallTimeoutBody(resp.Body, cancel, stallTimeout), mimeType, nil
+	return resp.Body, mimeType, nil
+}
+
+// open performs a binary GET against path via c.Stream with the extra
+// request headers given, failing with a *StatusError unless the response
+// status is one of okStatuses. On success, resp.Body is wrapped so a
+// stalled read aborts after stallTimeout, and cancelling ctx (e.g. the
+// DLNA client hung up) aborts the download.
+func (c *Client) open(ctx context.Context, op, path string, header http.Header, okStatuses ...int) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	req, err := c.newRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	resp, err := c.Stream.Do(req)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	if !slices.Contains(okStatuses, resp.StatusCode) {
+		_ = resp.Body.Close()
+		cancel()
+		return nil, &StatusError{Op: op, StatusCode: resp.StatusCode, Status: resp.Status}
+	}
+	resp.Body = newStallTimeoutBody(resp.Body, cancel, stallTimeout)
+	return resp, nil
 }
 
 // stallTimeoutBody aborts a download (by cancelling its request context)
