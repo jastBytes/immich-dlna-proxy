@@ -141,6 +141,16 @@ distinct from `/media/person/{id}` above: that one serves a *person's*
 face-crop cover art (cached), this one serves an *asset's* generated
 preview (uncached).
 
+Binary downloads from Immich (`DownloadOriginal`, `GetAssetThumbnail`,
+`GetPersonThumbnail`) use `immich.Client.Stream`, which has no overall
+timeout (that would cut off large videos mid-transfer) - only a 30s
+response-header timeout plus a 30s per-read stall timeout - and carry
+the inbound request's context, so a DLNA client hanging up cancels the
+Immich download. Every asset/album/person ID taken from a URL or Browse
+ObjectID must pass `immich.ValidID` before reaching the Immich client or
+the cache (otherwise `404`) - see "ID validation" in
+`docs/architecture.md`.
+
 On a cache miss, `serveMedia` acquires a slot from `Server.fetchSem` (a
 buffered channel sized by `MEDIA_FETCH_CONCURRENCY`, default 4) before
 calling Immich, so a TV rapidly scrolling through a large album can't

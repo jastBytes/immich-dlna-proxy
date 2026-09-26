@@ -359,6 +359,44 @@ it fetches from `Client.GetPersonThumbnail` instead of
 Immich already generates person thumbnails as small, correctly-oriented
 face crops, so there's nothing to normalize.
 
+### Download timeouts and cancellation
+
+The binary downloads behind `/media/*` and `/thumbnail/*`
+(`Client.DownloadOriginal`, `GetAssetThumbnail`, `GetPersonThumbnail`)
+go through `immich.Client.Stream`, a separate `http.Client` from the one
+used for JSON API calls. The JSON client has a 30s overall timeout; the
+streaming one deliberately doesn't, because `http.Client.Timeout` also
+covers reading the response body - a multi-GB video that takes longer
+than 30s to transfer would otherwise be cut off mid-download and never
+make it into the cache. Instead:
+
+- Immich must start answering (response headers) within 30s
+  (`ResponseHeaderTimeout`).
+- A single read from the body that blocks for more than 30s
+  (`stallTimeout`) aborts the download. The timer only runs *while* a
+  read is in progress, so a paused TV applying TCP backpressure on the
+  `DISABLE_CACHE=true` pass-through path never counts as a stall; a slow
+  but progressing download is never interrupted.
+- Every download carries the inbound request's context, so when the DLNA
+  client hangs up (e.g. a TV scrolled past a thumbnail), the Immich
+  download is cancelled too and its `fetchSem` slot freed, rather than
+  finishing a download nobody is waiting for. On a cache miss this also
+  means a partially downloaded file is discarded (`cache.Put` removes its
+  temp file on error) and simply fetched again on the next request.
+
+### ID validation
+
+Asset, album and person IDs arrive from unauthenticated DLNA clients -
+in `/media/`, `/media/person/` and `/thumbnail/` URL paths and in Browse
+`ObjectID`s - and are spliced into Immich API paths requested with this
+proxy's API key, and into cache filenames. `immich.ValidID` (letters,
+digits and `-` only, which every Immich UUID satisfies) is checked
+before any of them is used; anything else gets a `404` without Immich
+ever being called. Without it, a crafted ID such as `..%2F..%2Fusers`
+could make the proxy fetch and relay arbitrary Immich GET endpoints. The
+client additionally `url.PathEscape`s every ID it puts into a path, as
+defense in depth.
+
 ### Bounding concurrent Immich fetches
 
 A TV rapidly scrolling through a large album fires off a `/media/{id}`

@@ -326,6 +326,10 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 
 	case strings.HasPrefix(local, "album:"):
 		albumID := strings.TrimPrefix(local, "album:")
+		if !immich.ValidID(albumID) {
+			http.Error(w, "unknown object", http.StatusNotFound)
+			return "", 0, 0, false
+		}
 		album, err := client.GetAlbum(albumID)
 		if err != nil {
 			log.Printf("GetAlbum(%s) failed: %v", albumID, err)
@@ -354,6 +358,10 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 
 	case strings.HasPrefix(local, "person:"):
 		personID := strings.TrimPrefix(local, "person:")
+		if !immich.ValidID(personID) {
+			http.Error(w, "unknown object", http.StatusNotFound)
+			return "", 0, 0, false
+		}
 
 		if args.BrowseFlag == "BrowseMetadata" {
 			person, err := client.GetPerson(personID)
@@ -382,6 +390,10 @@ func (s *Server) browseUserScope(w http.ResponseWriter, client *immich.Client, u
 
 	case strings.HasPrefix(local, "asset:"):
 		assetID := strings.TrimPrefix(local, "asset:")
+		if !immich.ValidID(assetID) {
+			http.Error(w, "unknown object", http.StatusNotFound)
+			return "", 0, 0, false
+		}
 		asset, err := client.GetAsset(assetID)
 		if err != nil {
 			log.Printf("GetAsset(%s) failed: %v", assetID, err)

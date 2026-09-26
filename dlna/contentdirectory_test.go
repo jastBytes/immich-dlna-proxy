@@ -372,6 +372,19 @@ func TestBrowseUnknownUserIndexReturns404(t *testing.T) {
 	}
 }
 
+// Browse ObjectIDs are client-controlled too, and their IDs end up in
+// Immich API paths just like /media/ ones - see
+// TestMediaHandlersRejectPathInjection.
+func TestBrowseRejectsInvalidIDs(t *testing.T) {
+	ts := newTestServerWithFakeImmich(t)
+	for _, objectID := range []string{"album:../users", "person:a%2Fb", "asset:..", "album:", "user:0:asset:a?b"} {
+		resp := browseExpectStatus(t, ts, objectID, "BrowseDirectChildren", http.StatusNotFound)
+		if !strings.Contains(resp, "unknown object") {
+			t.Errorf("%s: expected 'unknown object' error, got: %s", objectID, resp)
+		}
+	}
+}
+
 func TestBrowseRootShowsAlbumsAndPeopleFolders(t *testing.T) {
 	ts := newTestServerWithFakeImmich(t)
 

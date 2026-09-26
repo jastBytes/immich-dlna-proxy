@@ -126,7 +126,7 @@ func parseMediaPath(path string, numUsers int) (userIdx int, assetID string, ok 
 		return 0, "", false
 	}
 	assetID = path[i+1:]
-	if assetID == "" {
+	if !immich.ValidID(assetID) {
 		return 0, "", false
 	}
 	return idx, assetID, true
@@ -177,7 +177,7 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// show raw pixels, so a portrait photo tagged "rotate 90" needs the
 	// rotation baked into the pixels themselves to display upright.
 	s.serveMedia(w, r, assetID,
-		func() (io.ReadCloser, string, error) { return client.DownloadOriginal(assetID) },
+		func() (io.ReadCloser, string, error) { return client.DownloadOriginal(r.Context(), assetID) },
 		func(data []byte) []byte {
 			data = s.fixOrientation(assetID, data)
 			return s.maybeResize(assetID, data)
@@ -205,7 +205,7 @@ func (s *Server) handlePersonThumbnail(w http.ResponseWriter, r *http.Request) {
 	// IDs, like asset IDs, are UUIDs unique across every account on the
 	// same Immich server, so they can't collide between accounts either.
 	s.serveMedia(w, r, "person:"+personID,
-		func() (io.ReadCloser, string, error) { return client.GetPersonThumbnail(personID) },
+		func() (io.ReadCloser, string, error) { return client.GetPersonThumbnail(r.Context(), personID) },
 		nil)
 }
 
@@ -371,7 +371,7 @@ func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	client := s.users[userIdx].Client
 
-	body, mimeType, err := client.GetAssetThumbnail(assetID)
+	body, mimeType, err := client.GetAssetThumbnail(r.Context(), assetID)
 	if err != nil {
 		log.Printf("GetAssetThumbnail(%s) failed: %v", assetID, err)
 		http.Error(w, "upstream error", http.StatusBadGateway)

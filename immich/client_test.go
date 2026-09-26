@@ -1,12 +1,14 @@
 package immich
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewTrimsTrailingSlash(t *testing.T) {
@@ -171,7 +173,7 @@ func TestGetPersonThumbnail(t *testing.T) {
 	defer ts.Close()
 
 	client := New(ts.URL, "test-key")
-	body, mimeType, err := client.GetPersonThumbnail("p1")
+	body, mimeType, err := client.GetPersonThumbnail(context.Background(), "p1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,13 +192,13 @@ func TestGetPersonThumbnail(t *testing.T) {
 
 func TestGetPersonThumbnailDefaultsMimeType(t *testing.T) {
 	client := New("http://immich.local", "test-key")
-	client.HTTP.Transport = stubRoundTripper{resp: &http.Response{
+	client.Stream.Transport = stubRoundTripper{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{},
 		Body:       io.NopCloser(strings.NewReader("data")),
 	}}
 
-	body, mimeType, err := client.GetPersonThumbnail("p1")
+	body, mimeType, err := client.GetPersonThumbnail(context.Background(), "p1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -213,7 +215,7 @@ func TestGetPersonThumbnailErrorStatus(t *testing.T) {
 	defer ts.Close()
 
 	client := New(ts.URL, "test-key")
-	if _, _, err := client.GetPersonThumbnail("missing"); err == nil {
+	if _, _, err := client.GetPersonThumbnail(context.Background(), "missing"); err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
 }
@@ -385,7 +387,7 @@ func TestDownloadOriginal(t *testing.T) {
 	defer ts.Close()
 
 	client := New(ts.URL, "test-key")
-	body, mimeType, err := client.DownloadOriginal("a1")
+	body, mimeType, err := client.DownloadOriginal(context.Background(), "a1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,7 +418,7 @@ func TestGetAssetThumbnail(t *testing.T) {
 	defer ts.Close()
 
 	client := New(ts.URL, "test-key")
-	body, mimeType, err := client.GetAssetThumbnail("a1")
+	body, mimeType, err := client.GetAssetThumbnail(context.Background(), "a1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -440,7 +442,7 @@ func TestGetAssetThumbnailErrorStatus(t *testing.T) {
 	defer ts.Close()
 
 	client := New(ts.URL, "test-key")
-	if _, _, err := client.GetAssetThumbnail("missing"); err == nil {
+	if _, _, err := client.GetAssetThumbnail(context.Background(), "missing"); err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
 }
@@ -456,13 +458,13 @@ func (s stubRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
 
 func TestDownloadOriginalDefaultsMimeType(t *testing.T) {
 	client := New("http://immich.local", "test-key")
-	client.HTTP.Transport = stubRoundTripper{resp: &http.Response{
+	client.Stream.Transport = stubRoundTripper{resp: &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{},
 		Body:       io.NopCloser(strings.NewReader("data")),
 	}}
 
-	body, mimeType, err := client.DownloadOriginal("a1")
+	body, mimeType, err := client.DownloadOriginal(context.Background(), "a1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +481,7 @@ func TestDownloadOriginalErrorStatus(t *testing.T) {
 	defer ts.Close()
 
 	client := New(ts.URL, "test-key")
-	if _, _, err := client.DownloadOriginal("a1"); err == nil {
+	if _, _, err := client.DownloadOriginal(context.Background(), "a1"); err == nil {
 		t.Fatal("expected error for non-200 status")
 	}
 }
@@ -528,5 +530,134 @@ func TestSearchMetadataAssetsFollowsPagination(t *testing.T) {
 	}
 	if len(pagesSeen) != 2 || pagesSeen[0] != 1 || pagesSeen[1] != 2 {
 		t.Fatalf("expected to fetch pages [1 2], got %v", pagesSeen)
+	}
+}
+
+func TestValidID(t *testing.T) {
+	for _, id := range []string{"4f1c2d3e-0000-4abc-9def-0123456789ab", "photo1", "ABC-def"} {
+		if !ValidID(id) {
+			t.Errorf("ValidID(%q) = false, want true", id)
+		}
+	}
+	for _, id := range []string{"", "..", "../users/me", "a/b", "a?b", "a#b", "a%2Fb", "a.b", "a b", strings.Repeat("a", 65)} {
+		if ValidID(id) {
+			t.Errorf("ValidID(%q) = true, want false", id)
+		}
+	}
+}
+
+func TestIDsArePathEscaped(t *testing.T) {
+	var gotPath string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.EscapedPath()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer ts.Close()
+
+	_, _, _ = New(ts.URL, "k").DownloadOriginal(context.Background(), "../users/me?")
+	if want := "/api/assets/..%2Fusers%2Fme%3F/original"; gotPath != want {
+		t.Errorf("upstream path = %q, want %q", gotPath, want)
+	}
+}
+
+// A download slower than apiTimeout overall, but that never stalls for
+// longer than stallTimeout on a single read, must not be cut off - that's
+// the whole point of not using http.Client.Timeout for Stream.
+func TestDownloadSlowButProgressingIsNotCutOff(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = 200 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		for i := 0; i < 6; i++ {
+			_, _ = w.Write([]byte("chunk"))
+			w.(http.Flusher).Flush()
+			time.Sleep(100 * time.Millisecond)
+		}
+	}))
+	defer ts.Close()
+
+	client := New(ts.URL, "k")
+	client.HTTP.Timeout = 50 * time.Millisecond // must not apply to downloads
+	body, _, err := client.DownloadOriginal(context.Background(), "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+	data, err := io.ReadAll(body)
+	if err != nil {
+		t.Fatalf("slow download was cut off: %v", err)
+	}
+	if string(data) != strings.Repeat("chunk", 6) {
+		t.Errorf("body = %q", data)
+	}
+}
+
+func TestDownloadStallIsAborted(t *testing.T) {
+	old := stallTimeout
+	stallTimeout = 100 * time.Millisecond
+	defer func() { stallTimeout = old }()
+
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("start"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	body, _, err := New(ts.URL, "k").DownloadOriginal(context.Background(), "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadAll(body); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("stalled download returned no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stalled download was never aborted")
+	}
+}
+
+func TestDownloadAbortsWhenContextCancelled(t *testing.T) {
+	release := make(chan struct{})
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("start"))
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer ts.Close()
+	defer close(release)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	body, _, err := New(ts.URL, "k").DownloadOriginal(ctx, "a1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = body.Close() }()
+
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadAll(body); done <- err }()
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("cancelled download returned no error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled download kept running")
 	}
 }

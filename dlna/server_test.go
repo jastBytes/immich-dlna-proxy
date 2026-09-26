@@ -927,3 +927,52 @@ func makeTestJPEG(t *testing.T, w, h int) []byte {
 	}
 	return buf.Bytes()
 }
+
+// IDs from inbound URLs are spliced into Immich API paths (fetched with
+// this proxy's API key) and cache filenames, so anything that could
+// escape its path segment must be rejected before Immich is ever called -
+// otherwise e.g. /thumbnail/0/..%2F..%2Fusers would relay GET /api/users.
+func TestMediaHandlersRejectPathInjection(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	immichSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write([]byte("leaked"))
+	}))
+	defer immichSrv.Close()
+
+	for _, numUsers := range []int{1, 2} {
+		users := make([]UserClient, numUsers)
+		for i := range users {
+			users[i] = UserClient{Client: immich.New(immichSrv.URL, "test-key")}
+		}
+		c, err := cache.New(t.TempDir(), 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ts := httptest.NewServer(NewServer(&config.Config{}, users, c).Mux())
+
+		for _, path := range []string{
+			"/media/..%2Fusers%2Fme%3F",
+			"/media/0/..%2Fusers%2Fme%3F",
+			"/media/0/..%2F..%2Fserver%2Fconfig",
+			"/media/person/0/..%2F..%2Fusers",
+			"/thumbnail/0/..%2F..%2Fserver%2Fconfig%3F",
+			"/thumbnail/0/a%3Fb",
+			"/thumbnail/0/a.b",
+		} {
+			resp, err := http.Get(ts.URL + path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusNotFound {
+				t.Errorf("users=%d GET %s: status = %d, want 404", numUsers, path, resp.StatusCode)
+			}
+		}
+		ts.Close()
+	}
+	if n := upstreamCalls.Load(); n != 0 {
+		t.Errorf("Immich was called %d times for rejected IDs, want 0", n)
+	}
+}
