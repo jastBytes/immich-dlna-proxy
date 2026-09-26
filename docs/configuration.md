@@ -15,18 +15,25 @@ required is missing or malformed.
 | `LISTEN_ADDR` | no | `:8200` | `host:port` the HTTP part (description.xml, SOAP control, media streaming) binds to. |
 | `FRIENDLY_NAME` | no | `Immich Photos` | Name shown on TVs when they list available DLNA servers. |
 | `DEVICE_UUID` | no | fixed built-in default | Stable UUID identifying this device to DLNA clients. Set your own if you run more than one instance on the same network - every instance needs a distinct UUID or clients get confused about which is which. |
-| `SSDP_INTERFACE` | no | all interfaces | Restrict SSDP (discovery) to a single network interface name, e.g. `eth0`. Useful on multi-homed hosts to avoid announcing on, say, a Docker bridge interface. |
+| `SSDP_INTERFACE` | no | all interfaces | Restrict SSDP (discovery) to a single network interface name, e.g. `eth0`. Useful on multi-homed hosts to avoid announcing on, say, a Docker bridge interface. The IP announced to TVs is then that interface's own IPv4 address. |
+| `ADVERTISE_IP` | no | auto-detected | IPv4 address announced to TVs in SSDP `LOCATION` URLs. Auto-detection uses `SSDP_INTERFACE`'s address if set, otherwise the address the OS would use to reach the internet (or, with no default route, the first non-loopback address). Set this if TVs discover the server but can't connect because the wrong address was picked (e.g. a VLAN, bridge or VPN interface). |
 | `CACHE_DIR` | no | `/config/cache` | Directory where cached photo bytes are stored. Set to match a persistent volume/mount when running in a container. |
 | `CACHE_MAX_MB` | no | `2048` | Soft size budget for `CACHE_DIR` in megabytes. Once exceeded, least-recently-viewed photos are deleted first until back under budget. |
 | `DISABLE_CACHE` | no | `false` | Set to `true` to disable disk caching entirely and always stream live from Immich (nothing written to disk). |
 | `MAX_RESOLUTION` | no | (unset) | Downscale photos larger than this, e.g. `1920x1080`. Preserves aspect ratio; only JPEG/PNG are supported (others pass through untouched). Doesn't apply to videos. See [Downscaling](architecture.md#downscaling) for details. |
-| `MEDIA_FETCH_CONCURRENCY` | no | `4` | Max number of `/media/*` requests allowed to be downloading from Immich at once. Extra requests queue for a free slot (up to 30s, then fail with `503`) instead of hitting Immich all at once - protects Immich when a TV rapidly scrolls through a large album. Must be a positive integer. |
+| `MEDIA_FETCH_CONCURRENCY` | no | `4` | Max number of `/media/*` and `/thumbnail/*` requests allowed to be downloading from Immich at once (video playback doesn't count towards this). Extra requests queue for a free slot (up to 30s, then fail with `503`) instead of hitting Immich all at once - protects Immich when a TV rapidly scrolls through a large album. Must be a positive integer. |
+| `LISTING_CACHE_SECONDS` | no | `30` | How long Immich listing responses (albums, people, an album's/person's assets, the timeline) are reused across `Browse` calls. TVs page through a folder with many small requests, usually after asking for the folder's metadata first; without this, each of those re-fetched the complete listing from Immich. Changes in Immich show up after at most this long. `0` disables it (every `Browse` asks Immich live). Must be a non-negative integer. |
+| `TIMELINE_GROUPING` | no | `none` | How the "Timeline" folder is organized: `none` lists every photo/video in one flat list (newest first); `year` adds one folder per year; `month` adds year folders that each contain one folder per month (`2024-12`, `2024-11`, ...). Assets without a capture date go into an "Unknown date" folder. Folder names sort chronologically even on TVs that sort by title. |
+| `DEBUG` | no | `false` | Set to `true` for verbose logs: every `/media/` and `/thumbnail/` request (one per photo a TV renders), orientation/resize notes, and background video cache fills. Protocol requests (`/description.xml`, `Browse`) are always logged. |
 | `TITLE_DATE_PREFIX` | no | `false` | Set to `true` to prefix every photo/video's title with its capture date, e.g. `2024-05-01 13:04:05 IMG_1234.jpg`. Some DLNA clients (Samsung Smart TVs are the known case) always sort and display items by title themselves, with no on-TV option to sort by date instead - prefixing the title with a sortable date makes that alphabetical sort come out chronological. An asset with no capture date keeps its bare filename. |
 | `TITLE_DATE_PREFIX_DESC` | no | `false` | Only has an effect when `TITLE_DATE_PREFIX=true`. Set to `true` to make the client's own alphabetical title sort come out newest-first instead of oldest-first. A calendar date can't be made to sort in reverse while still reading as a date, so titles instead lead with a zero-padded countdown number ahead of the usual human-readable date, e.g. `8285431354 2024-05-01 13:04:05 IMG_1234.jpg` - see [Architecture → Control](architecture.md#3-control-contentdirectory-browse) for why. |
 
-`CACHE_MAX_MB` and `MEDIA_FETCH_CONCURRENCY` must parse as integers (the
-latter must also be positive); a malformed value fails startup with a
-clear error rather than silently falling back to a default.
+`CACHE_MAX_MB`, `MEDIA_FETCH_CONCURRENCY` and `LISTING_CACHE_SECONDS`
+must parse as integers (`MEDIA_FETCH_CONCURRENCY` must also be positive,
+`LISTING_CACHE_SECONDS` non-negative), `TIMELINE_GROUPING` must be one of
+the listed values, and `ADVERTISE_IP` must be an IPv4 address; a
+malformed value fails startup with a clear error rather than silently
+falling back to a default.
 
 ## Multiple Immich accounts
 
@@ -57,8 +64,10 @@ export IMMICH_API_KEY=your-api-key
 go run .
 ```
 
-Logs go to stdout, including the friendly name/UUID being announced and
-whether the disk cache is enabled.
+Logs go to stdout, including the friendly name/UUID being announced, the
+`LOCATION` URL TVs are told to use, and whether the disk cache is
+enabled. Stop with Ctrl+C (or `docker stop`): the proxy then announces
+`ssdp:byebye` so TVs remove it from their server list right away.
 
 ## Running in Docker
 
@@ -139,6 +148,12 @@ template default), then restart the container.
   `CACHE_DIR` while the container is stopped (or even while running -
   the worst case is a few extra Immich downloads for photos that were
   mid-cache).
+- Videos are cached too. The first playback of an uncached video is
+  proxied straight through from Immich (so it starts immediately) while
+  the full file downloads into the cache in the background - so it
+  briefly uses twice the bandwidth from Immich. Keep `CACHE_MAX_MB`
+  comfortably above your largest videos, or they'll be evicted right
+  after being cached.
 - Note that `CACHE_DIR` stores whatever `MAX_RESOLUTION` produced - if
   you change `MAX_RESOLUTION` later, previously cached files stay at
   the old resolution until they're evicted (by size budget) or you clear

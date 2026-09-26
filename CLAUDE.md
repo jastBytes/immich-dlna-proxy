@@ -43,13 +43,14 @@ re-runs CI, builds release archives, and publishes a multi-arch image to
 
 Data flow: `main.go` wires together `config` → `immich` client → `cache`
 → `dlna` server, then runs the HTTP server and the SSDP responder
-concurrently. Each package has one job:
+concurrently until SIGINT/SIGTERM, which triggers a graceful shutdown
+(SSDP `ssdp:byebye`, then `http.Server.Shutdown` with a 5s grace period). Each package has one job:
 
 | Package | Responsibility |
 |---|---|
 | `config/` | Reads and validates env vars at startup (`config.Load()`); fails fast with a clear message rather than falling back to silent defaults for malformed values (e.g. non-numeric `CACHE_MAX_MB`). |
-| `immich/` | Thin REST client for the Immich API (`client.go`) and the JSON shapes it expects (`types.go`) — `GET /api/albums`, `/api/albums/{id}`, `/api/people`, `/api/people/{id}`, `/api/people/{id}/assets`, `/api/people/{id}/thumbnail`, `/api/assets/{id}/original`, `/api/assets/{id}/thumbnail`. |
-| `cache/` | LRU disk cache for original photo/video bytes, keyed by asset ID. Not used for album/asset/people *listings*, and not used for `/thumbnail/{id}` — only for `/media/{id}` bytes. |
+| `immich/` | Thin REST client for the Immich API (`client.go`) and the JSON shapes it expects (`types.go`) — `GET /api/albums`, `/api/albums/{id}`, `/api/people`, `/api/people/{id}`, `/api/people/{id}/thumbnail`, `/api/assets/{id}`, `/api/assets/{id}/original`, `/api/assets/{id}/thumbnail`, `/api/users/me`, `POST /api/search/metadata`. JSON calls share `doJSON`/`getJSON`; non-200 answers are `*StatusError` (`IsNotFound` for 404/400). |
+| `cache/` | LRU disk cache for the bytes behind `/media/{id}`, `/media/person/{id}` (key `person:<id>`) and `/thumbnail/{id}` (key `thumb:<id>`). `Get`/`Put` return open `*os.File`s so a concurrent eviction can't break a hit. Not used for listings (see `dlna/listcache.go`). |
 | `imageproc/` | Box-filter downscaling for `MAX_RESOLUTION`, JPEG/PNG only; a no-op passthrough for video and other formats. |
 | `dlna/` | Everything protocol-facing: SSDP discovery, UPnP description XML, ContentDirectory/ConnectionManager/X_MS_MediaReceiverRegistrar SOAP actions, DIDL-Lite XML building, and the `/media/{id}` / `/thumbnail/{id}` HTTP handlers. |
 
@@ -61,11 +62,13 @@ different file in `dlna/`:
    device, UUID, device type, and each service type) is answered
    individually via `searchTargets` — a control point that searches for
    a specific service type rather than the device type must still find
-   the server — and `ssdp:all` gets one reply per target. The announced
-   `LOCATION` uses whatever local IP the OS would pick to reach the
-   internet (`detectLocalIP`), which is why Docker needs
-   `--network host` — SSDP multicast doesn't traverse the default bridge
-   network.
+   the server — and `ssdp:all` gets one reply per target. On shutdown
+   (context cancelled) it sends `ssdp:byebye`. The announced `LOCATION`
+   IP comes from `advertiseIP`: `ADVERTISE_IP`, else `SSDP_INTERFACE`'s
+   IPv4 address, else whatever local IP the OS would pick to reach the
+   internet (`detectLocalIP`), else the first non-loopback address.
+   Docker needs `--network host` — SSDP multicast doesn't traverse the
+   default bridge network.
 2. **Description (HTTP GET)** — `description.go` serves
    `/description.xml`, `/ContentDirectory.xml`, `/ConnectionManager.xml`,
    `/X_MS_MediaReceiverRegistrar.xml`.
@@ -83,12 +86,22 @@ different file in `dlna/`:
 
 | ObjectID | Immich call | Returns |
 |---|---|---|
-| `0` (root) | — | containers `albums`, `people` |
+| `0` (root) | — | containers `albums`, `people`, `timeline` |
 | `albums` | `GET /api/albums` | one container per album |
 | `album:<id>` | `GET /api/albums/{id}` | one item per photo/video (filtered to `IMAGE`/`VIDEO`) |
 | `people` | `GET /api/people` | one container per *named* person (unnamed face clusters skipped) |
 | `person:<id>` | `GET /api/people/{id}/assets` | one item per photo/video (filtered to `IMAGE`/`VIDEO`) |
-| `asset:<id>` | — | `<res>` points at `/media/{assetID}` |
+| `timeline` | `POST /api/search/metadata` (`order: desc`) | every photo/video, newest first — or, with `TIMELINE_GROUPING=year`/`month`, one container per year (`timeline:<YYYY>`, plus `timeline:unknown`) |
+| `timeline:<YYYY>` / `timeline:<YYYY-MM>` | (same listing, grouped in memory — `timeline.go`) | that year's items, or (month mode) its month containers / that month's items |
+| `asset:<id>` | `GET /api/assets/{id}` | `<res>` points at `/media/{assetID}` |
+
+With multiple `IMMICH_API_KEYS`, the root instead lists one `user:<idx>`
+container per account, and every ObjectID above is prefixed
+`user:<idx>:` (`browseMultiUser`); `/media/`, `/thumbnail/` URLs gain an
+`{idx}/` segment. Browse failures are SOAP faults (`dlna/soap.go`): `701
+No such object` for unknown/invalid ObjectIDs or Immich 404s, `501 Action
+Failed` otherwise — `browseUserScope` returns errors, `handleBrowse`
+writes the fault.
 
 `buildAssetItem` (`contentdirectory.go`) picks each item's `<upnp:class>`
 (`object.item.imageItem.photo` vs `object.item.videoItem.movie`) and
@@ -108,45 +121,38 @@ at `GET /media/person/{personID}` and cached under `"person:<id>"` to
 avoid colliding with the asset cache. Both are omitted (no
 `albumArtURI` element) when Immich has no cover to offer.
 
-Every `Browse` call hits Immich live; listings are never cached, only
-the bytes behind `/media/{id}` and `/media/person/{id}`.
+Browse listings go through `cachedClient` (`listcache.go`), which reuses
+Immich listing responses for `LISTING_CACHE_SECONDS` (default 30; `0` =
+always live) and shares concurrent loads; errors are never cached. Cached
+slices are shared — clone before sorting in place.
 
-**Media streaming** (`server.go`, `GET /media/{assetID}`): on cache hit,
-serves straight from `CACHE_DIR` via `http.ServeContent` (handles
-`Range`/`ETag` for free), no Immich call. On cache miss, downloads the
-*full* original from Immich regardless of any inbound `Range` header.
-Photos are buffered into memory (needed anyway for orientation/resize),
-then written to disk. Videos skip that buffering — `isVideoMimeType`
-routes them to `serveVideo`, which streams Immich's response body
-straight into `cache.Put` (or straight to the client with caching
-disabled) rather than reading a potentially multi-gigabyte file fully
-into memory first. Either way the result is written to disk (temp file +
-`os.Rename` for atomicity) then served from there, so `Range` works for
-seeking. With `DISABLE_CACHE=true`, the equivalent path streams straight
-to the response instead of disk — for video that means no `Range`
-support, an accepted trade-off for that already-opt-out mode.
+**Media streaming** (`server.go`, `Server.serveMedia`, parameterized by a
+`mediaSource`): on cache hit, serves straight from `CACHE_DIR` via
+`http.ServeContent` (handles `Range`/`ETag` for free), no Immich call.
+Concurrent misses for the same key share one download (`joinFlight`).
+On a miss, a photo is downloaded in full, buffered (needed for
+orientation/resize), written to disk (temp file + `os.Rename`) and served
+from there. A video (`isVideoMimeType`) is instead proxied through with
+the client's `Range` forwarded (`proxyRange` → `Client.OpenOriginalRange`)
+so playback starts immediately, while the full download already started
+continues detached in `fillCacheInBackground` to fill the cache (so the
+first playback downloads twice). With `DISABLE_CACHE=true`, photos are
+served from memory and videos are proxied the same way, minus the fill.
+Immich 404 → `404`, other failures → `502`.
 
-`GET /media/person/{personID}` (`handlePersonThumbnail`) shares this same
-cache/fetch/serve path (`Server.serveMedia`) but pulls from
-`Client.GetPersonThumbnail` (`/api/people/{id}/thumbnail`) instead, and
-skips orientation-fixing and downscaling since Immich's face-crop
-thumbnails need neither (and are never video, so the `serveVideo` branch
-never fires for them).
+`GET /media/person/{personID}` (key `person:<id>`, via
+`Client.GetPersonThumbnail`) and `GET /thumbnail/{assetID}` (key
+`thumb:<id>`, Immich's `/api/assets/{id}/thumbnail?size=preview`, used for
+video items' `albumArtURI`) share `serveMedia`, without the
+orientation/resize transform and without `openRange` (never video).
 
-**Thumbnails** (`server.go`, `GET /thumbnail/{assetID}`): proxies
-Immich's `/api/assets/{id}/thumbnail?size=preview` uncached. Only used
-for video items' `albumArtURI` (see above) — small enough, and cheap
-enough for Immich to regenerate, that caching isn't worth it. This is
-distinct from `/media/person/{id}` above: that one serves a *person's*
-face-crop cover art (cached), this one serves an *asset's* generated
-preview (uncached).
-
-Binary downloads from Immich (`DownloadOriginal`, `GetAssetThumbnail`,
-`GetPersonThumbnail`) use `immich.Client.Stream`, which has no overall
-timeout (that would cut off large videos mid-transfer) - only a 30s
-response-header timeout plus a 30s per-read stall timeout - and carry
-the inbound request's context, so a DLNA client hanging up cancels the
-Immich download. Every asset/album/person ID taken from a URL or Browse
+Binary downloads from Immich (`DownloadOriginal`, `OpenOriginalRange`,
+`GetAssetThumbnail`, `GetPersonThumbnail`) use `immich.Client.Stream`,
+which has no overall timeout (that would cut off large videos
+mid-transfer) - only a 30s response-header timeout plus a 30s per-read
+stall timeout - and follow the inbound request's context, so a DLNA
+client hanging up cancels the Immich download (except a video's
+background cache fill, which is deliberately detached). Every asset/album/person ID taken from a URL or Browse
 ObjectID must pass `immich.ValidID` before reaching the Immich client or
 the cache (otherwise `404`) - see "ID validation" in
 `docs/architecture.md`.
@@ -156,10 +162,17 @@ buffered channel sized by `MEDIA_FETCH_CONCURRENCY`, default 4) before
 calling Immich, so a TV rapidly scrolling through a large album can't
 fire off unbounded concurrent downloads; a request that can't get a slot
 within 30s (`fetchQueueTimeout`) gives up with `503` instead of queuing
-indefinitely. Cache hits never touch this queue.
+indefinitely. Cache hits never touch this queue, and the slot is released
+once the bytes are in (photos) or as soon as a video is identified.
 
-**Cache** (`cache/cache.go`): each asset is two files — `<assetID>`
-(bytes) and `<assetID>.type` (MIME sidecar). "Last used" = file mtime,
+**HTTP server**: `Server.NewHTTPServer` sets `ReadHeaderTimeout`/
+`IdleTimeout` but deliberately no `WriteTimeout` (would cut off video
+streams). SOAP bodies are capped at 64 KB (`readSOAPBody`). Request
+logging (`dlna/log.go`) always logs protocol requests but `/media/` and
+`/thumbnail/` only with `DEBUG=true` (`debugf`).
+
+**Cache** (`cache/cache.go`): each entry is two files — `<key>`
+(bytes) and `<key>.type` (MIME sidecar). "Last used" = file mtime,
 touched on every hit via `os.Chtimes`. After each write, a background
 sweep evicts oldest-mtime files first once total size exceeds
 `CACHE_MAX_MB`.
