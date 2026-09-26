@@ -43,10 +43,21 @@ On startup, `dlna.RunSSDP` joins the standard SSDP multicast group
   minutes) to the multicast group, so clients that are already listening
   pick up the server without having to search first.
 
-The `LOCATION` URL uses whatever local IP the OS would pick to reach the
-public internet (`detectLocalIP` in `ssdp.go`), combined with the
-configured HTTP port. This is why **host networking is required in
-Docker** - see [Configuration](configuration.md#networking) for why.
+On shutdown (SIGINT/SIGTERM, e.g. `docker stop`), `main.go` cancels
+`RunSSDP`'s context and it sends one `NOTIFY ssdp:byebye` per advertised
+type, so TVs drop the server right away instead of listing it until the
+last announcement's `max-age` (30 minutes) runs out; the HTTP server then
+gets 5 seconds to finish in-flight requests.
+
+The `LOCATION` URL's IP is chosen by `advertiseIP` (`ssdp.go`):
+`ADVERTISE_IP` if set; otherwise, with `SSDP_INTERFACE` set, that
+interface's own IPv4 address (so a multi-homed host announces the
+address on the network it actually advertises to); otherwise whatever
+local IP the OS would pick to reach the public internet
+(`detectLocalIP`); and on a LAN with no default route at all, the first
+non-loopback IPv4 address. It's combined with the configured HTTP port.
+This is why **host networking is required in Docker** - see
+[Configuration](configuration.md#networking) for why.
 
 ### 2. Description
 
@@ -97,7 +108,9 @@ changes with `IMMICH_API_KEYS`):
 | `album:<id>` | One album | One `item` per **photo/video** asset in that album (`GET /api/albums/{id}`, filtered to `type == "IMAGE"` or `"VIDEO"`) |
 | `people` | "People" folder | One `container` per **named** person (`GET /api/people`, filtered to entries with a non-empty `name` - unconfirmed/unnamed face clusters are skipped) |
 | `person:<id>` | One person | One `item` per photo/video they appear in (`GET /api/people/{id}/assets`, filtered to `type == "IMAGE"` or `"VIDEO"`) |
-| `timeline` | "Timeline" folder | One `item` per photo/video across the whole library, most recently taken first (`POST /api/search/metadata` with `order: "desc"` and no album/person filter, filtered to `type == "IMAGE"` or `"VIDEO"`) |
+| `timeline` | "Timeline" folder | One `item` per photo/video across the whole library, most recently taken first (`POST /api/search/metadata` with `order: "desc"` and no album/person filter, filtered to `type == "IMAGE"` or `"VIDEO"`) - or, with `TIMELINE_GROUPING=year`/`month`, one `container` per year (newest first, plus `timeline:unknown` for assets without a capture date) |
+| `timeline:<YYYY>` | One year (grouping only) | With `year`: that year's items. With `month`: one `container` per month (`timeline:<YYYY-MM>`) |
+| `timeline:<YYYY-MM>` | One month (`month` grouping only) | That month's items |
 | `asset:<id>` | One photo/video | N/A (items have no children); `BrowseMetadata` returns the item itself |
 
 Neither "People" nor "Timeline" report a `childCount` at the root (both
@@ -107,10 +120,33 @@ library just to render the root listing, which doesn't scale for large
 libraries - same reasoning as the People folder below, just applied to
 the whole library instead of per-person.
 
-Each `Browse` call hits the Immich API fresh - album/asset/people
-**listings** are not cached (only the underlying image bytes are, see
-[Caching](#caching) below). A TV re-opening the same album or person
-repeatedly will re-fetch the listing every time.
+The timeline groups (`dlna/timeline.go`) are computed in memory from the
+same full timeline listing, bucketed by each asset's capture date
+(`fileCreatedAt`, UTC). Their titles (`2024`, `2024-05`) double as their
+sort keys, so they come out chronological even on TVs that sort
+everything by title themselves; the flat default is unchanged.
+
+Listing responses from Immich are kept in memory for
+`LISTING_CACHE_SECONDS` (default 30) by `listingCache`
+(`dlna/listcache.go`): a TV typically sends `BrowseMetadata` for a
+folder and then pages through its children with several
+`BrowseDirectChildren` calls, and without this each of those re-fetched
+the complete listing - for the timeline of a large library, that meant
+paging through every asset Immich has once per page shown. Concurrent
+loads of the same listing share one Immich request, failed loads are
+never cached, and each account's entries are kept apart. With
+`LISTING_CACHE_SECONDS=0`, every `Browse` hits Immich live. (The photo
+and video *bytes* are cached separately, on disk - see
+[Caching](#caching).)
+
+Failed `Browse`/`Search` calls are answered with a UPnP SOAP fault (HTTP
+500 with a `UPnPError` detail, as the UPnP Device Architecture
+requires), built by `writeBrowseError` (`dlna/soap.go`): `701 No such
+object` for an unknown or malformed ObjectID, or when Immich answers 404
+for it (a deleted album, a stale ID remembered by the TV), and `501
+Action Failed` when Immich is unreachable or errors. Bare HTTP error
+pages are something several TV stacks treat as the whole server being
+broken. SOAP request bodies are capped at 64 KB (`readSOAPBody`).
 
 People folders don't report a `childCount` (the DIDL-Lite attribute is
 simply omitted): getting an accurate photo count per person would need
@@ -258,10 +294,12 @@ albumArtURI target based on `Asset.IsVideo()`:
   - the photo is its own thumbnail.
 - **Videos** use `http://<host>/thumbnail/<assetID>` instead, since a
   video file can't be decoded as a preview image the way a photo can.
-  That endpoint (`dlna/server.go`'s `handleThumbnail`) proxies Immich's
-  `GET /api/assets/{id}/thumbnail?size=preview` directly, uncached -
-  thumbnails are small and cheap enough for Immich to regenerate that
-  caching isn't worth the added complexity.
+  That endpoint (`dlna/server.go`'s `handleThumbnail`) serves Immich's
+  `GET /api/assets/{id}/thumbnail?size=preview` through the same
+  cache/fetch-queue path as `/media/` (see
+  [Media streaming](#media-streaming)), cached under `thumb:<assetID>` -
+  a TV scrolling through a video-heavy album requests these as rapidly
+  as photo thumbnails.
 
 Album and person `<container>` elements carry the same
 `<upnp:albumArtURI>` tag when a cover image is available, so folder
@@ -327,37 +365,102 @@ default), and whether the asset is a photo or a video.
   the very first view of a photo waits for the full download before any
   bytes reach the TV; subsequent views are effectively instant.
 - **Cache miss, video:** `isVideoMimeType` (checked against the
-  `Content-Type` Immich's download response carries) routes the request
-  to `serveVideo` instead of the photo path above. Videos are never
-  buffered into memory or decoded - there's no orientation/resize step
-  for them, and a video can be gigabytes in size, so buffering the whole
-  thing first (the way the photo path does, to support decode-based
-  transforms) isn't practical. Immich's response body is streamed
-  straight into `cache.Put` (which itself just `io.Copy`s to a temp file
-  before the atomic rename), then served from the newly written file -
-  so `Range` still works for seeking, the same as a cache hit.
+  `Content-Type` Immich's download response carries) takes the request
+  off the photo path above. Videos are never buffered into memory or
+  decoded, and the TV isn't made to wait for the whole (possibly
+  multi-GB) file either - many TVs give up long before that. Instead,
+  `proxyRange` re-requests the original from Immich with the TV's own
+  `Range` header forwarded (`Client.OpenOriginalRange`) and relays the
+  status (`200`/`206`/`416`) and the headers a player needs to seek
+  (`Content-Length`, `Content-Range`, `Accept-Ranges`), so playback and
+  seeking start immediately. Meanwhile the full download already
+  started is handed to `fillCacheInBackground`, detached from the
+  request, which streams it into `cache.Put` - so a TV that only probes
+  the first few bytes or stops playback early still ends up with the
+  video cached, and the next playback is served from disk like any
+  cache hit. The cost is that the first playback briefly downloads the
+  video from Immich twice in parallel. Video playback releases its
+  `fetchSem` slot right away (see below): those slots exist to protect
+  Immich from thumbnail bursts, not to cap how many TVs can play at
+  once.
 - **Cache disabled** (`DISABLE_CACHE=true`), photo: same download,
   orientation fix, and optional downscale as a photo cache miss above,
   but the result is served straight from memory instead of being written
   to disk.
-- **Cache disabled, video:** Immich's response body is copied directly to
-  the client instead of through `cache.Put`. This can't support `Range`
-  requests (there's nothing seekable to serve them from) - an accepted
-  trade-off, since `DISABLE_CACHE` is already an opt-out mode mainly
-  meant for testing/debugging (see
-  [Configuration](configuration.md#tuning-the-cache)).
+- **Cache disabled, video:** proxied through with `Range` exactly like
+  an uncached video above, just without the background cache fill - so
+  seeking works in this mode too.
+
+Concurrent cache misses for the same key share one download: the first
+request registers a *flight* (`Server.flights`, `joinFlight`) and the
+others wait for it and then serve from the freshly written cache file,
+rather than each downloading the same file again (a TV and its preview
+pane, or two TVs, asking for the same photo). If the key turns out to be
+a video, the waiters stop waiting as soon as that's known and proxy
+their own request through as above, instead of waiting for the whole
+file. This needs the disk cache - with `DISABLE_CACHE=true` there's
+nowhere to share the result, so each request fetches on its own.
+
+A download that Immich answers with `404` (asset deleted, or not visible
+to that account's API key) is answered with `404`, not `502`.
 
 `GET /media/person/{personID}` (or `/media/person/{idx}/{personID}` with
 multiple `IMMICH_API_KEYS` configured - see
 [Multiple Immich accounts](#multiple-immich-accounts)) is a sibling
 endpoint for person cover thumbnails (see
-[Container album art](#3-control-contentdirectory-browse) above). It
-shares the same cache-hit/cache-miss/cache-disabled flow -
-`Server.serveMedia` implements the common path for both handlers - except
-it fetches from `Client.GetPersonThumbnail` instead of
-`Client.DownloadOriginal`, and skips the orientation-fix/downscale step:
-Immich already generates person thumbnails as small, correctly-oriented
-face crops, so there's nothing to normalize.
+[Container album art](#3-control-contentdirectory-browse) above), and
+`GET /thumbnail/{assetID}` one for video preview thumbnails. Both share
+the same cache-hit/cache-miss/cache-disabled/dedup flow -
+`Server.serveMedia` implements the common path for all three handlers,
+parameterized by a `mediaSource` - except they fetch from
+`Client.GetPersonThumbnail`/`GetAssetThumbnail` instead of
+`Client.DownloadOriginal`, are cached under `person:<id>`/`thumb:<id>`
+so they never collide with an asset's own bytes, and skip the
+orientation-fix/downscale step: Immich already generates them as small,
+correctly-oriented images, so there's nothing to normalize.
+
+### Download timeouts and cancellation
+
+The binary downloads behind `/media/*` and `/thumbnail/*`
+(`Client.DownloadOriginal`, `OpenOriginalRange`, `GetAssetThumbnail`,
+`GetPersonThumbnail`)
+go through `immich.Client.Stream`, a separate `http.Client` from the one
+used for JSON API calls. The JSON client has a 30s overall timeout; the
+streaming one deliberately doesn't, because `http.Client.Timeout` also
+covers reading the response body - a multi-GB video that takes longer
+than 30s to transfer would otherwise be cut off mid-download and never
+make it into the cache. Instead:
+
+- Immich must start answering (response headers) within 30s
+  (`ResponseHeaderTimeout`).
+- A single read from the body that blocks for more than 30s
+  (`stallTimeout`) aborts the download. The timer only runs *while* a
+  read is in progress, so a paused TV applying TCP backpressure on the
+  `DISABLE_CACHE=true` pass-through path never counts as a stall; a slow
+  but progressing download is never interrupted.
+- Every photo/thumbnail download follows the inbound request's
+  lifetime, so when the DLNA client hangs up (e.g. a TV scrolled past a
+  thumbnail), the Immich download is cancelled too and its `fetchSem`
+  slot freed, rather than finishing a download nobody is waiting for; a
+  partially downloaded file is discarded (`cache.Put` removes its temp
+  file on error) and simply fetched again on the next request. The one
+  exception is a video's background cache fill, which is deliberately
+  detached from the request that started it (see above) - it's bounded
+  by the stall timeout alone. The proxied playback request itself
+  follows the TV's connection like any other.
+
+### ID validation
+
+Asset, album and person IDs arrive from unauthenticated DLNA clients -
+in `/media/`, `/media/person/` and `/thumbnail/` URL paths and in Browse
+`ObjectID`s - and are spliced into Immich API paths requested with this
+proxy's API key, and into cache filenames. `immich.ValidID` (letters,
+digits and `-` only, which every Immich UUID satisfies) is checked
+before any of them is used; anything else gets a `404` without Immich
+ever being called. Without it, a crafted ID such as `..%2F..%2Fusers`
+could make the proxy fetch and relay arbitrary Immich GET endpoints. The
+client additionally `url.PathEscape`s every ID it puts into a path, as
+defense in depth.
 
 ### Bounding concurrent Immich fetches
 
@@ -366,10 +469,12 @@ request per thumbnail it renders; if most of those are cache misses (a
 first browse, or `DISABLE_CACHE=true`), that's a burst of simultaneous
 downloads that can overwhelm Immich. `Server.fetchSem`
 (`dlna/server.go`), a buffered channel sized by `MEDIA_FETCH_CONCURRENCY`
-(default 4), caps how many of those cache-miss fetches run at once - only
-the section of `serveMedia` between the cache-hit check and the
-Immich request/response acquires a slot, so browsing an already-cached
-album stays unthrottled. A request that can't get a slot within 30s
+(default 4), caps how many of those cache-miss fetches (`/media/`,
+`/media/person/` and `/thumbnail/` alike) run at once - a slot is held
+only while bytes are actually coming from Immich (released before
+decode/resize/cache write for photos, and as soon as a video is
+identified), so browsing an already-cached album stays unthrottled and
+video playback never blocks thumbnails. A request that can't get a slot within 30s
 (`fetchQueueTimeout`) gives up and responds `503` rather than queuing
 indefinitely or piling onto Immich once a slot frees up long after the TV
 has moved on.
@@ -399,7 +504,9 @@ See [`cache/cache.go`](../cache/cache.go) for the implementation. Key
 points:
 
 - Each cached asset is stored as two files: `<assetID>` (the bytes) and
-  `<assetID>.type` (a one-line MIME type sidecar).
+  `<assetID>.type` (a one-line MIME type sidecar). Person cover
+  thumbnails use the key `person:<id>`, video preview thumbnails
+  `thumb:<id>`.
 - "Last used" is approximated by the main file's **mtime**, which gets
   touched (`os.Chtimes`) on every cache hit. There's no separate access
   log or database.
@@ -412,6 +519,11 @@ points:
   sidecar together) until back under budget. This is a plain LRU
   eviction sweep, not a background daemon - it only runs reactively
   after writes.
+- `Get` and `Put` hand back an already-open file rather than a path, so
+  an eviction sweep deleting the file between lookup and open can't turn
+  a hit into an error - an unlinked file stays readable through an open
+  handle. That also means an entry bigger than the whole budget (which
+  the sweep deletes right after writing it) is still served once.
 
 ## Downscaling
 
@@ -454,8 +566,9 @@ cached/served. See [`imageproc/resize.go`](../imageproc/resize.go).
   people show up as folders - there's no "unknown faces" browsing.
 - **Image format conversion.** JPEG/PNG can be downscaled (see
   `MAX_RESOLUTION` below) but never converted to a different format.
-- **Listing cache.** Album/asset/people browsing always hits the Immich
-  API live (only the image bytes are cached).
+- **Persistent listing cache.** Listings are only kept in memory for
+  `LISTING_CACHE_SECONDS`; there's no change-notification from Immich,
+  so `SystemUpdateID` stays constant.
 - **Authentication/authorization at the DLNA layer.** Anyone who can
   reach the proxy's HTTP port on your LAN can browse and view all
   albums visible to the configured API key. There's no per-client access

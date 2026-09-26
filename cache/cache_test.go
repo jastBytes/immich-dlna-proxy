@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -14,24 +15,26 @@ func TestPutGetRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	path, err := c.Put("asset1", "image/jpeg", strings.NewReader("hello world"))
+	f, err := c.Put("asset1", "image/jpeg", strings.NewReader("hello world"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(f)
+	_ = f.Close()
 	if err != nil || string(data) != "hello world" {
 		t.Fatalf("unexpected cached content: %q err=%v", data, err)
 	}
 
-	gotPath, mime, _, ok := c.Get("asset1")
+	got, mime, _, ok := c.Get("asset1")
 	if !ok {
 		t.Fatal("expected cache hit")
 	}
+	defer func() { _ = got.Close() }()
 	if mime != "image/jpeg" {
 		t.Fatalf("expected mime image/jpeg, got %s", mime)
 	}
-	if gotPath != path {
-		t.Fatalf("path mismatch: %s vs %s", gotPath, path)
+	if data, _ := io.ReadAll(got); string(data) != "hello world" {
+		t.Fatalf("Get content = %q", data)
 	}
 
 	if _, _, _, ok := c.Get("does-not-exist"); ok {
@@ -48,9 +51,11 @@ func TestEvictionRemovesOldestFirst(t *testing.T) {
 	}
 
 	for i, id := range []string{"a", "b", "c"} {
-		if _, err := c.Put(id, "image/jpeg", strings.NewReader("12345")); err != nil {
+		f, err := c.Put(id, "image/jpeg", strings.NewReader("12345"))
+		if err != nil {
 			t.Fatal(err)
 		}
+		_ = f.Close()
 		// Ensure distinct mtimes so ordering is deterministic across
 		// filesystems with coarse mtime resolution.
 		time.Sleep(20 * time.Millisecond)
@@ -73,10 +78,39 @@ func TestEvictionRemovesOldestFirst(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 
-	if _, _, _, ok := c.Get("a"); ok {
+	if f, _, _, ok := c.Get("a"); ok {
+		_ = f.Close()
 		t.Error("expected oldest entry 'a' to have been evicted")
 	}
-	if _, _, _, ok := c.Get("c"); !ok {
+	if f, _, _, ok := c.Get("c"); !ok {
 		t.Error("expected newest entry 'c' to still be cached")
+	} else {
+		_ = f.Close()
+	}
+}
+
+// An entry bigger than the whole budget is evicted by the sweep Put kicks
+// off right away - but the handle Put returns must still serve it.
+func TestPutReturnsReadableFileEvenIfEvictedImmediately(t *testing.T) {
+	c, err := New(t.TempDir(), 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := c.Put("big", "video/mp4", strings.NewReader("too large for the budget"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(c.mainPath("big")); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil || string(data) != "too large for the budget" {
+		t.Fatalf("read after eviction = %q, err=%v", data, err)
 	}
 }

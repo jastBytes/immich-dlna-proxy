@@ -1,10 +1,13 @@
 package dlna
 
 import (
+	"context"
 	"net"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jastBytes/immich-dlna-proxy/config"
 )
 
 func TestSearchTargets(t *testing.T) {
@@ -220,5 +223,73 @@ func TestSendAliveNotifiesEveryTarget(t *testing.T) {
 		if !seen[target] {
 			t.Errorf("expected a NOTIFY with NT %q, got: %v", target, seen)
 		}
+	}
+}
+
+func TestSendByebyeNotifiesEveryTarget(t *testing.T) {
+	out, in := udpPair(t)
+	targets := searchTargets("test-uuid")
+
+	sendByebye(out, in.LocalAddr().(*net.UDPAddr), "test-uuid")
+
+	for range targets {
+		pkt := readOnePacket(t, in)
+		if !strings.HasPrefix(pkt, "NOTIFY * HTTP/1.1\r\n") || !strings.Contains(pkt, "NTS: ssdp:byebye\r\n") {
+			t.Errorf("expected ssdp:byebye NOTIFY, got: %s", pkt)
+		}
+		if strings.Contains(pkt, "LOCATION:") {
+			t.Errorf("byebye must not carry LOCATION: %s", pkt)
+		}
+	}
+}
+
+func TestAdvertiseIP(t *testing.T) {
+	if ip, err := advertiseIP("192.168.1.50", nil); err != nil || ip != "192.168.1.50" {
+		t.Errorf("configured: got %q, %v", ip, err)
+	}
+
+	// With an interface, its own address wins over the default route's.
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range ifaces {
+		if ifaces[i].Flags&net.FlagLoopback == 0 {
+			continue
+		}
+		ip, err := advertiseIP("", &ifaces[i])
+		if err != nil {
+			t.Skipf("loopback %s has no IPv4: %v", ifaces[i].Name, err)
+		}
+		if !net.ParseIP(ip).IsLoopback() {
+			t.Errorf("interface %s: got %q, want its loopback address", ifaces[i].Name, ip)
+		}
+		return
+	}
+	t.Skip("no loopback interface")
+}
+
+// Cancelling RunSSDP's context makes it return cleanly (after announcing
+// byebye) instead of blocking forever.
+func TestRunSSDPReturnsOnCancel(t *testing.T) {
+	cfg := &config.Config{UUID: "test-uuid", ListenAddr: ":0", AdvertiseIP: "127.0.0.1"}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- RunSSDP(ctx, cfg) }()
+
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case err := <-done:
+		t.Skipf("SSDP couldn't start in this environment: %v", err)
+	default:
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("RunSSDP returned %v after cancel, want nil", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunSSDP didn't return after cancel")
 	}
 }

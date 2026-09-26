@@ -1,8 +1,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/jastBytes/immich-dlna-proxy/cache"
 	"github.com/jastBytes/immich-dlna-proxy/config"
@@ -40,17 +47,48 @@ func main() {
 		log.Printf("Disk cache disabled (DISABLE_CACHE=true) - streaming directly from Immich every time")
 	}
 
-	server := dlna.NewServer(cfg, users, diskCache)
+	if cfg.Debug {
+		log.Printf("Debug logging enabled")
+	}
 
+	server := dlna.NewServer(cfg, users, diskCache)
+	httpServer := server.NewHTTPServer()
+
+	// SIGINT/SIGTERM (e.g. `docker stop`) trigger a clean shutdown: SSDP
+	// announces ssdp:byebye so TVs drop the server right away, and
+	// in-flight HTTP requests get a few seconds to finish.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	errc := make(chan error, 2)
 	go func() {
-		if err := server.ListenAndServe(); err != nil {
-			log.Fatalf("HTTP server failed: %v", err)
+		log.Printf("HTTP (description/SOAP/media) listening on %s", cfg.ListenAddr)
+		if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			errc <- fmt.Errorf("HTTP server failed: %w", err)
 		}
 	}()
 
-	log.Printf("Starting SSDP responder (friendly name: %s, uuid: %s, interface: %s)", cfg.FriendlyName, cfg.UUID, ifaceOrAll(cfg.Interface))
-	if err := dlna.RunSSDP(cfg); err != nil {
-		log.Fatalf("SSDP responder failed: %v", err)
+	ssdpDone := make(chan struct{})
+	go func() {
+		defer close(ssdpDone)
+		log.Printf("Starting SSDP responder (friendly name: %s, uuid: %s, interface: %s)", cfg.FriendlyName, cfg.UUID, ifaceOrAll(cfg.Interface))
+		if err := dlna.RunSSDP(ctx, cfg); err != nil {
+			errc <- fmt.Errorf("SSDP responder failed: %w", err)
+		}
+	}()
+
+	select {
+	case err := <-errc:
+		log.Fatalf("%v", err)
+	case <-ctx.Done():
+	}
+
+	log.Printf("Shutting down")
+	<-ssdpDone // byebye sent
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Printf("HTTP shutdown: %v", err)
 	}
 }
 

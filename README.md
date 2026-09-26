@@ -22,39 +22,45 @@ Written in Go, no external dependencies — just the standard library.
   (`GET /api/albums`, `GET /api/albums/{id}`, `GET /api/people`,
   `GET /api/people/{id}/assets`, `POST /api/search/metadata`) and maps the
   root to three folders, "Albums", "People", and "Timeline" (every
-  photo/video, newest first), each album/person to a DLNA *container*
+  photo/video, newest first - optionally grouped into year or month
+  folders via `TIMELINE_GROUPING`), each album/person to a DLNA *container*
   (folder), and each photo/video asset to a DLNA *item*.
 - **X_MS_MediaReceiverRegistrar**: a Microsoft-defined UPnP extension some
   clients (Xbox, Windows Media Player, some Samsung firmwares) require to
   be present before they'll browse a server's content at all - the proxy
   advertises it and always answers "authorized".
 - **Media streaming (HTTP)**: `/media/{assetID}` serves photo/video bytes
-  to the TV. On a cache miss, it downloads the full original from
-  Immich's `/api/assets/{id}/original`, writes it to a disk cache, then
-  serves it from there (with proper `Range`/`ETag` support via
-  `http.ServeContent`). On a cache hit, it's served straight from disk -
-  no Immich call at all. Videos are streamed straight into the cache
-  file rather than buffered in memory first, since they can be much
-  larger than photos. `/media/person/{personID}` works the same way for
-  person cover thumbnails, backed by Immich's `/api/people/{id}/thumbnail`.
-- **Thumbnails (HTTP)**: `/thumbnail/{assetID}` proxies Immich's
-  generated preview thumbnail, uncached. Used as the `albumArtURI` for
-  video items, since a video file can't double as its own preview image
-  the way a photo can.
+  to the TV. On a cache hit, it's served straight from disk (with proper
+  `Range`/`ETag` support via `http.ServeContent`) - no Immich call at
+  all. On a cache miss, a photo is downloaded in full from Immich's
+  `/api/assets/{id}/original`, written to the disk cache, then served
+  from there. An uncached video is instead proxied straight through to
+  Immich with the TV's `Range` header, so playback and seeking start
+  immediately, while the full file downloads into the cache in the
+  background for next time. Concurrent requests for the same uncached
+  asset share one download. `/media/person/{personID}` works the same
+  way for person cover thumbnails, backed by Immich's
+  `/api/people/{id}/thumbnail`.
+- **Thumbnails (HTTP)**: `/thumbnail/{assetID}` serves Immich's
+  generated preview thumbnail (cached like `/media/`). Used as the
+  `albumArtURI` for video items, since a video file can't double as its
+  own preview image the way a photo can.
 
 ## Caching
 
 Original photo/video bytes are cached on disk under `CACHE_DIR` (default
 `/config/cache`) so repeated views of the same asset don't hit Immich
-again. Album/asset/people *listings* (`Browse`) are **not** cached yet -
-only the bytes behind `/media/{assetID}` and `/media/person/{personID}`
-(thumbnails at `/thumbnail/{assetID}`, used for video items'
-`albumArtURI`, are never cached either). See
+again - that covers `/media/{assetID}`, `/media/person/{personID}` and
+`/thumbnail/{assetID}`. Album/asset/people *listings* (`Browse`) are only
+kept in memory for `LISTING_CACHE_SECONDS` (default 30), so a TV paging
+through a large album doesn't re-fetch the whole listing for every page,
+while changes in Immich still show up within seconds. See
 [Architecture → Caching](docs/architecture.md#caching) for cache keys and
 eviction, and [→ Media streaming](docs/architecture.md#media-streaming)
 for how `DISABLE_CACHE` changes this.
 
-- Cache key is the asset ID (or `person:<id>` for person thumbnails);
+- Cache key is the asset ID (or `person:<id>` for person thumbnails,
+  `thumb:<id>` for video preview thumbnails);
   stored as `<key>` (bytes) + `<key>.type` (MIME type sidecar).
 - "Last used" is approximated by the file's mtime, touched on every hit.
 - Once the cache exceeds `CACHE_MAX_MB`, a background sweep deletes the
@@ -80,7 +86,11 @@ asset type is skipped.
 | `CACHE_MAX_MB`     | no       | `2048`           | Soft size budget in MB before LRU eviction kicks in |
 | `DISABLE_CACHE`    | no       | `false`          | Set to `true` to disable caching entirely       |
 | `MAX_RESOLUTION`   | no       | (unset = disabled) | Downscale photos larger than this to fit, e.g. `1920x1080`. Aspect ratio is preserved; smaller images are left untouched. |
-| `MEDIA_FETCH_CONCURRENCY` | no | `4`         | Max photos allowed to download from Immich at once; extra requests queue for a free slot (giving up after 30s) instead of piling onto Immich |
+| `MEDIA_FETCH_CONCURRENCY` | no | `4`         | Max photos/thumbnails allowed to download from Immich at once; extra requests queue for a free slot (giving up after 30s) instead of piling onto Immich |
+| `LISTING_CACHE_SECONDS` | no | `30`         | How long album/people/timeline listings are reused across `Browse` calls; `0` always asks Immich live |
+| `TIMELINE_GROUPING` | no     | `none`           | `year` or `month` to split the Timeline folder into year (and month) folders |
+| `ADVERTISE_IP`     | no       | auto-detected    | IP announced to TVs via SSDP, if auto-detection picks the wrong one |
+| `DEBUG`            | no       | `false`          | Set to `true` to log every media request and other per-photo details |
 
 ## Run locally
 
@@ -155,9 +165,12 @@ the server.
   to load or fail outright, with no server-side fallback. A follow-up
   version could cache Immich's `/thumbnail?size=preview` for photos
   instead of the original for faster loading.
-- Album/asset *listings* aren't cached, only the image bytes - a TV
-  re-browsing a huge album will still hit the Immich API for the listing
-  every time, just not re-download photos it already viewed.
+- Album/asset *listings* are only cached in memory for
+  `LISTING_CACHE_SECONDS` - a TV re-browsing a huge album after that
+  fetches the listing from Immich again (but not photos it already
+  viewed).
+- The first playback of an uncached video downloads it from Immich twice
+  at the same time: once proxied to the TV, once into the cache.
 - The disk cache has no encryption/access control beyond normal
   filesystem permissions; anyone with access to `CACHE_DIR` can read
   cached photos directly.

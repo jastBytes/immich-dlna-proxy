@@ -2,9 +2,11 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // Config holds all runtime settings for the proxy.
@@ -29,6 +31,11 @@ type Config struct {
 	// Interface optionally restricts SSDP to a single network interface name
 	// (e.g. "eth0"). Empty means "all interfaces".
 	Interface string
+	// AdvertiseIP overrides the IP address announced to DLNA clients in
+	// SSDP LOCATION URLs (ADVERTISE_IP). Empty means auto-detect: the
+	// IPv4 address of Interface if set, otherwise the address the OS
+	// would use to reach the internet.
+	AdvertiseIP string
 
 	// CacheDir is where original photo bytes are cached on disk. Empty
 	// disables caching (every view proxies straight from Immich again).
@@ -71,6 +78,28 @@ type Config struct {
 	// sorts first) followed by the actual human-readable date and
 	// filename - see assetTitle in dlna/contentdirectory.go.
 	TitleDatePrefixDescending bool
+
+	// ListingCacheTTL is how long Immich listing responses (albums,
+	// people, an album's/person's assets, the timeline) are reused across
+	// Browse calls. A TV pages through a container with many small Browse
+	// requests; without this, each one re-fetches the complete listing
+	// from Immich. Set via LISTING_CACHE_SECONDS (default 30); 0 disables
+	// it so every Browse hits Immich live. Photo/video bytes are cached
+	// separately (CacheDir) and unaffected.
+	ListingCacheTTL time.Duration
+
+	// TimelineGrouping controls how the Timeline folder is organized:
+	// "none" (default) lists every photo/video flat, newest first; "year"
+	// adds one folder per year; "month" adds year folders containing one
+	// folder per month. Set via TIMELINE_GROUPING.
+	TimelineGrouping string
+
+	// Debug enables verbose logging (DEBUG=true): every /media/ and
+	// /thumbnail/ request, per-photo orientation/resize notes, and
+	// background cache fills. Off by default because a TV scrolling
+	// through an album produces one such line per photo; protocol
+	// requests (description, Browse) are always logged regardless.
+	Debug bool
 }
 
 func Load() (*Config, error) {
@@ -81,6 +110,7 @@ func Load() (*Config, error) {
 		FriendlyName: getEnvDefault("FRIENDLY_NAME", "Immich Photos"),
 		UUID:         getEnvDefault("DEVICE_UUID", "3e7f0f4e-8c2e-4f7a-9c2a-immichdlna01"),
 		Interface:    os.Getenv("SSDP_INTERFACE"),
+		AdvertiseIP:  strings.TrimSpace(os.Getenv("ADVERTISE_IP")),
 		CacheDir:     getEnvDefault("CACHE_DIR", "/config/cache"),
 	}
 
@@ -89,6 +119,12 @@ func Load() (*Config, error) {
 	}
 	if len(cfg.APIKeys) == 0 {
 		return nil, fmt.Errorf("IMMICH_API_KEY (or IMMICH_API_KEYS) is not set")
+	}
+
+	if cfg.AdvertiseIP != "" {
+		if ip := net.ParseIP(cfg.AdvertiseIP); ip == nil || ip.To4() == nil {
+			return nil, fmt.Errorf("ADVERTISE_IP must be an IPv4 address, got %q", cfg.AdvertiseIP)
+		}
 	}
 
 	if os.Getenv("DISABLE_CACHE") == "true" {
@@ -115,8 +151,23 @@ func Load() (*Config, error) {
 	}
 	cfg.MediaFetchConcurrency = n
 
+	listingTTL := getEnvDefault("LISTING_CACHE_SECONDS", "30")
+	secs, err := strconv.Atoi(listingTTL)
+	if err != nil || secs < 0 {
+		return nil, fmt.Errorf("LISTING_CACHE_SECONDS must be a non-negative integer, got %q", listingTTL)
+	}
+	cfg.ListingCacheTTL = time.Duration(secs) * time.Second
+
+	cfg.TimelineGrouping = strings.ToLower(getEnvDefault("TIMELINE_GROUPING", "none"))
+	switch cfg.TimelineGrouping {
+	case "none", "year", "month":
+	default:
+		return nil, fmt.Errorf(`TIMELINE_GROUPING must be "none", "year" or "month", got %q`, os.Getenv("TIMELINE_GROUPING"))
+	}
+
 	cfg.TitleDatePrefix = os.Getenv("TITLE_DATE_PREFIX") == "true"
 	cfg.TitleDatePrefixDescending = os.Getenv("TITLE_DATE_PREFIX_DESC") == "true"
+	cfg.Debug = os.Getenv("DEBUG") == "true"
 
 	return cfg, nil
 }

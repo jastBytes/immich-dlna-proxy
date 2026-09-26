@@ -2,7 +2,6 @@ package dlna
 
 import (
 	"encoding/xml"
-	"io"
 	"net/http"
 )
 
@@ -70,9 +69,8 @@ func (s *Server) handleMediaReceiverRegistrarSCPD(w http.ResponseWriter, r *http
 }
 
 func (s *Server) handleMediaReceiverRegistrarControl(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	raw, ok := readSOAPBody(w, r)
+	if !ok {
 		return
 	}
 
