@@ -708,3 +708,32 @@ func TestIsNotFound(t *testing.T) {
 		t.Errorf("DownloadOriginal(missing): IsNotFound(%v) = false", err)
 	}
 }
+
+// A 403 names the API key permission the call needs, since a scoped key
+// missing one otherwise just makes some photos or folders fail.
+func TestForbiddenNamesMissingPermission(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer ts.Close()
+	c := New(ts.URL, "k")
+
+	cases := map[string]error{}
+	_, _, cases["asset.view"] = c.GetAssetThumbnail(context.Background(), "a1")
+	_, _, cases["asset.download"] = c.DownloadOriginal(context.Background(), "a1")
+	_, cases["album.read"] = c.ListAlbums()
+	_, cases["asset.read"] = c.ListTimelineAssets()
+	_, cases["user.read"] = c.GetMyUser()
+	for perm, err := range cases {
+		if err == nil || !strings.Contains(err.Error(), "lacks the "+perm+" permission") {
+			t.Errorf("want hint about %s, got %v", perm, err)
+		}
+	}
+
+	// Other statuses carry no permission hint.
+	notFound := httptest.NewServer(http.NotFoundHandler())
+	defer notFound.Close()
+	if _, err := New(notFound.URL, "k").ListAlbums(); err == nil || strings.Contains(err.Error(), "permission") {
+		t.Errorf("404 should not mention permissions: %v", err)
+	}
+}

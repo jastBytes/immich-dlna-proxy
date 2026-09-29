@@ -15,7 +15,9 @@ type Config struct {
 	// ImmichURL is the base URL of the Immich server, e.g. http://192.168.1.10:2283
 	ImmichURL string
 	// APIKeys is one or more Immich API keys, each with at least
-	// album.read / asset.read / asset.download / person.read permissions.
+	// album.read / asset.read / asset.download / asset.view / person.read
+	// permissions (plus user.read when more than one is configured) - see
+	// docs/configuration.md.
 	// A single key (the common case) browses as today - no extra folder
 	// level. When more than one key is configured (IMMICH_API_KEYS), each
 	// key gets its own top-level folder named after the Immich account it

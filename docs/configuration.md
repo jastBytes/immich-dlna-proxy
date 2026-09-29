@@ -10,8 +10,8 @@ required is missing or malformed.
 | Variable | Required | Default | Description |
 |---|:---:|---|---|
 | `IMMICH_URL` | yes | – | Base URL of your Immich server, reachable from wherever the proxy runs, e.g. `http://192.168.1.10:2283`. No trailing slash needed. |
-| `IMMICH_API_KEY` | yes* | – | Immich API key. Needs at least `album.read`, `asset.read`, `asset.download`, and `person.read` permissions. Create one under Immich → Account Settings → API Keys. `asset.download` is easy to miss - without it, albums/people browse fine but every photo fails to load (proxy logs `DownloadOriginal(...): unexpected status 403`). *Not required if `IMMICH_API_KEYS` is set. |
-| `IMMICH_API_KEYS` | no | – | Comma-separated list of Immich API keys, for exposing more than one Immich user's library through the same proxy (e.g. one household sharing a single Immich server, each member with their own account). Takes precedence over `IMMICH_API_KEY` when set. Each key needs the same permissions as `IMMICH_API_KEY` above, plus no extra permission is needed for the proxy to look up the key's own account name (`GET /api/users/me`) - it uses that name to label the key's top-level folder. See [Multiple Immich accounts](architecture.md#multiple-immich-accounts). |
+| `IMMICH_API_KEY` | yes* | – | Immich API key. Needs the `album.read`, `asset.read`, `asset.download`, `asset.view` and `person.read` permissions - see [API key permissions](#api-key-permissions). Create one under Immich → Account Settings → API Keys. *Not required if `IMMICH_API_KEYS` is set. |
+| `IMMICH_API_KEYS` | no | – | Comma-separated list of Immich API keys, for exposing more than one Immich user's library through the same proxy (e.g. one household sharing a single Immich server, each member with their own account). Takes precedence over `IMMICH_API_KEY` when set. Each key needs the same permissions as `IMMICH_API_KEY` above, plus `user.read`: the proxy looks up each key's own account name (`GET /api/users/me`) at startup to label its top-level folder, and fails to start without it. See [Multiple Immich accounts](architecture.md#multiple-immich-accounts). |
 | `LISTEN_ADDR` | no | `:8200` | `host:port` the HTTP part (description.xml, SOAP control, media streaming) binds to. |
 | `FRIENDLY_NAME` | no | `Immich Photos` | Name shown on TVs when they list available DLNA servers. |
 | `DEVICE_UUID` | no | fixed built-in default | Stable UUID identifying this device to DLNA clients. Set your own if you run more than one instance on the same network - every instance needs a distinct UUID or clients get confused about which is which. |
@@ -40,6 +40,35 @@ may only name the listed folders, and `ADVERTISE_IP` must be an IPv4
 address; a
 malformed value fails startup with a clear error rather than silently
 falling back to a default.
+
+## API key permissions
+
+Immich API keys can be limited to specific permissions (Account Settings
+→ API Keys → edit). The proxy only ever reads; these are all the
+permissions it uses, per Immich endpoint:
+
+| Permission | Immich endpoints | Needed for |
+|---|---|---|
+| `album.read` | `GET /api/albums`, `/api/albums/{id}` | The "Albums" folder |
+| `person.read` | `GET /api/people`, `/api/people/{id}`, `/api/people/{id}/thumbnail` | The "People" folder and people's cover images |
+| `asset.read` | `POST /api/search/metadata`, `GET /api/assets/{id}` | Every photo/video listing: albums, people, Timeline, Favorites, On this day, Places, Random |
+| `asset.download` | `GET /api/assets/{id}/original` | Serving original photos and videos |
+| `asset.view` | `GET /api/assets/{id}/thumbnail`, `/api/assets/{id}/video/playback` | Video thumbnails, HEIC & other photos served as JPEG preview (`PHOTO_SOURCE=auto`/`preview`), `VIDEO_SOURCE=transcoded` |
+| `user.read` | `GET /api/users/me` | Only with more than one key in `IMMICH_API_KEYS` (account names) |
+
+The health check (`GET /api/server/ping`) needs no permission. A key
+created with "all permissions" works too.
+
+A missing permission doesn't stop the proxy from starting (except
+`user.read` with multiple keys) - instead, whatever needs it fails. The
+proxy log then names the permission to grant, e.g. `immich
+GetAssetThumbnail(...): unexpected status 403 Forbidden - the API key
+probably lacks the asset.view permission`. The two most commonly missed:
+
+- `asset.download`: albums and people browse fine, but every photo and
+  video fails to load.
+- `asset.view`: JPEG photos load, but HEIC photos (as JPEG previews),
+  video thumbnails and, with `VIDEO_SOURCE=transcoded`, videos fail.
 
 ## Multiple Immich accounts
 
