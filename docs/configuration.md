@@ -20,6 +20,7 @@ required is missing or malformed.
 | `CACHE_DIR` | no | `/config/cache` | Directory where cached photo bytes are stored. Set to match a persistent volume/mount when running in a container. |
 | `CACHE_MAX_MB` | no | `2048` | Soft size budget for `CACHE_DIR` in megabytes. Once exceeded, least-recently-viewed photos are deleted first until back under budget. |
 | `DISABLE_CACHE` | no | `false` | Set to `true` to disable disk caching entirely and always stream live from Immich (nothing written to disk). |
+| `PHOTO_SOURCE` | no | `auto` | Which bytes are served for photos. `auto` serves JPEG/PNG originals as-is and everything else (e.g. iPhone HEIC, WebP, TIFF - formats most TVs can't display) as Immich's generated JPEG preview. `original` always serves the original file; `preview` always serves the preview (faster on slow TVs, lower resolution). Videos are unaffected. Clear the cache after changing it. Requires Immich's preview format to be JPEG (the default). See [Photo formats](architecture.md#photo-formats-photo_source). |
 | `MAX_RESOLUTION` | no | (unset) | Downscale photos larger than this, e.g. `1920x1080`. Preserves aspect ratio; only JPEG/PNG are supported (others pass through untouched). Doesn't apply to videos. See [Downscaling](architecture.md#downscaling) for details. |
 | `MEDIA_FETCH_CONCURRENCY` | no | `4` | Max number of `/media/*` and `/thumbnail/*` requests allowed to be downloading from Immich at once (video playback doesn't count towards this). Extra requests queue for a free slot (up to 30s, then fail with `503`) instead of hitting Immich all at once - protects Immich when a TV rapidly scrolls through a large album. Must be a positive integer. |
 | `LISTING_CACHE_SECONDS` | no | `30` | How long Immich listing responses (albums, people, an album's/person's assets, the timeline) are reused across `Browse` calls. TVs page through a folder with many small requests, usually after asking for the folder's metadata first; without this, each of those re-fetched the complete listing from Immich. Changes in Immich show up after at most this long. `0` disables it (every `Browse` asks Immich live). Must be a non-negative integer. |
@@ -30,8 +31,8 @@ required is missing or malformed.
 
 `CACHE_MAX_MB`, `MEDIA_FETCH_CONCURRENCY` and `LISTING_CACHE_SECONDS`
 must parse as integers (`MEDIA_FETCH_CONCURRENCY` must also be positive,
-`LISTING_CACHE_SECONDS` non-negative), `TIMELINE_GROUPING` must be one of
-the listed values, and `ADVERTISE_IP` must be an IPv4 address; a
+`LISTING_CACHE_SECONDS` non-negative), `PHOTO_SOURCE` and
+`TIMELINE_GROUPING` must be one of the listed values, and `ADVERTISE_IP` must be an IPv4 address; a
 malformed value fails startup with a clear error rather than silently
 falling back to a default.
 
@@ -64,7 +65,8 @@ export IMMICH_API_KEY=your-api-key
 go run .
 ```
 
-Logs go to stdout, including the friendly name/UUID being announced, the
+Logs go to stdout, starting with the version, then the friendly
+name/UUID being announced, the
 `LOCATION` URL TVs are told to use, and whether the disk cache is
 enabled. Stop with Ctrl+C (or `docker stop`): the proxy then announces
 `ssdp:byebye` so TVs remove it from their server list right away.
@@ -154,6 +156,9 @@ template default), then restart the container.
   briefly uses twice the bandwidth from Immich. Keep `CACHE_MAX_MB`
   comfortably above your largest videos, or they'll be evicted right
   after being cached.
+- The same applies to `PHOTO_SOURCE`: the cache holds whichever bytes
+  (original or preview) were served first, so clear it after changing
+  the setting.
 - Note that `CACHE_DIR` stores whatever `MAX_RESOLUTION` produced - if
   you change `MAX_RESOLUTION` later, previously cached files stay at
   the old resolution until they're evicted (by size budget) or you clear

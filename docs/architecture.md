@@ -291,7 +291,11 @@ thumbnail (they don't fall back to `<res>` for previews). `buildAssetItem`
 albumArtURI target based on `Asset.IsVideo()`:
 
 - **Photos** use their own `/media/<assetID>` URL as the albumArtURI too
-  - the photo is its own thumbnail.
+  - the photo is its own thumbnail. Which bytes that URL serves depends
+  on `PHOTO_SOURCE` (see [Photo formats](#photo-formats-photo_source)):
+  a photo served as Immich's JPEG preview is advertised as `image/jpeg`
+  with `DLNA.ORG_CI=1` and no `size`, since those describe the original
+  file, not what the TV will receive.
 - **Videos** use `http://<host>/thumbnail/<assetID>` instead, since a
   video file can't be decoded as a preview image the way a photo can.
   That endpoint (`dlna/server.go`'s `handleThumbnail`) serves Immich's
@@ -300,6 +304,24 @@ albumArtURI target based on `Asset.IsVideo()`:
   [Media streaming](#media-streaming)), cached under `thumb:<assetID>` -
   a TV scrolling through a video-heavy album requests these as rapidly
   as photo thumbnails.
+
+Every `<res>` element's `protocolInfo` carries the DLNA fourth field
+minidlna sends (`dlnaFeatures` in `dlna/didl.go`):
+`DLNA.ORG_OP=01;DLNA.ORG_CI=<0|1>;DLNA.ORG_FLAGS=<flags>`. `OP=01`
+advertises byte-range seeking - every media URL supports `Range` -
+which several Samsung and LG renderers require before they show a seek
+bar or allow seeking at all; `FLAGS` marks images as interactive and
+video as streaming transfers. No `DLNA.ORG_PN` profile is given: the
+right JPEG profile depends on pixel dimensions (`JPEG_LRG` tops out at
+4096x4096, smaller than many phone photos), and a wrong profile is worse
+than none. The same field is sent as the `contentFeatures.dlna.org`
+header on `/media/` and `/thumbnail/` responses, together with
+`transferMode.dlna.org` (`Streaming` for video, `Interactive` for
+images). Video items also carry `duration` (from Immich's `duration`,
+e.g. `0:01:05.250`) and `resolution` (from `exifImageWidth`/`Height`)
+so TVs can show a video's length and seek bar before playback starts.
+Photos get no `resolution`: orientation fixing and `MAX_RESOLUTION` can
+change their served dimensions.
 
 Album and person `<container>` elements carry the same
 `<upnp:albumArtURI>` tag when a cover image is available, so folder
@@ -479,6 +501,37 @@ video playback never blocks thumbnails. A request that can't get a slot within 3
 indefinitely or piling onto Immich once a slot frees up long after the TV
 has moved on.
 
+## Photo formats (`PHOTO_SOURCE`)
+
+DLNA only requires renderers to support JPEG, and in practice PNG is the
+only other photo format TVs reliably display. iPhones shoot HEIC by
+default, and Immich libraries also hold WebP, TIFF, RAW-derived and
+other formats that most TVs show as a broken thumbnail. Immich already
+generates a JPEG preview of every photo (`GET
+/api/assets/{id}/thumbnail?size=preview`, by default 1440px on the
+long edge), so `PHOTO_SOURCE` (`servesPreview` in `dlna/photosource.go`)
+picks which bytes `/media/` serves for a photo:
+
+- `auto` (default): JPEG/PNG originals as-is, everything else as the
+  preview. An asset with no MIME type in Immich's metadata keeps the
+  original.
+- `original`: always the original file (the behavior before this option existed).
+- `preview`: always the preview - smaller and faster on slow TVs or
+  networks, at reduced resolution.
+
+Videos are never affected. The decision is made twice with the same
+inputs: in Browse, so the item is advertised as `image/jpeg` (a TV
+decides from `protocolInfo` whether it can display an item at all), and
+in `handleMedia` on a cache miss, which looks the asset up
+(`Client.GetAsset`, through the listing cache the Browse that listed it
+has usually just filled) and fetches the preview instead of the
+original; if that lookup fails, it falls back to the original. The
+result is cached under the asset ID like any other `/media/` response,
+so changing `PHOTO_SOURCE` only affects photos not yet cached - clear
+`CACHE_DIR` after changing it. Immich's preview format must be left at
+its default, JPEG (Immich → Administration → Settings → Image Settings);
+a WebP preview would defeat the point.
+
 ## Orientation
 
 Every JPEG is checked for an EXIF orientation tag (`imageproc/orientation.go`)
@@ -564,8 +617,10 @@ cached/served. See [`imageproc/resize.go`](../imageproc/resize.go).
 - **Unnamed people.** Immich creates a Person for every detected face
   cluster, including ones you haven't confirmed/named yet. Only named
   people show up as folders - there's no "unknown faces" browsing.
-- **Image format conversion.** JPEG/PNG can be downscaled (see
-  `MAX_RESOLUTION` below) but never converted to a different format.
+- **Image format conversion by the proxy itself.** Non-JPEG/PNG photos
+  are served as Immich's own JPEG preview (see
+  [Photo formats](#photo-formats-photo_source)), never converted
+  locally; JPEG/PNG can be downscaled (see `MAX_RESOLUTION` below).
 - **Persistent listing cache.** Listings are only kept in memory for
   `LISTING_CACHE_SECONDS`; there's no change-notification from Immich,
   so `SystemUpdateID` stays constant.

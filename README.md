@@ -85,6 +85,7 @@ asset type is skipped.
 | `CACHE_DIR`        | no       | `/config/cache`  | Where cached photo bytes are stored             |
 | `CACHE_MAX_MB`     | no       | `2048`           | Soft size budget in MB before LRU eviction kicks in |
 | `DISABLE_CACHE`    | no       | `false`          | Set to `true` to disable caching entirely       |
+| `PHOTO_SOURCE`     | no       | `auto`           | `auto`: JPEG/PNG as original, HEIC & other formats TVs can't show as Immich's JPEG preview. `original` / `preview` force one or the other. |
 | `MAX_RESOLUTION`   | no       | (unset = disabled) | Downscale photos larger than this to fit, e.g. `1920x1080`. Aspect ratio is preserved; smaller images are left untouched. |
 | `MEDIA_FETCH_CONCURRENCY` | no | `4`         | Max photos/thumbnails allowed to download from Immich at once; extra requests queue for a free slot (giving up after 30s) instead of piling onto Immich |
 | `LISTING_CACHE_SECONDS` | no | `30`         | How long album/people/timeline listings are reused across `Browse` calls; `0` always asks Immich live |
@@ -176,9 +177,9 @@ the server.
   cached photos directly.
 - `MAX_RESOLUTION` downscaling only supports JPEG and PNG (the two
   formats the Go standard library can decode *and* re-encode). HEIC,
-  WebP, TIFF, and similar are served at their original resolution even
-  if `MAX_RESOLUTION` is set - unsupported formats are passed through
-  untouched rather than dropped. The downscaler uses a simple box filter,
+  WebP, TIFF, and similar are served as Immich's JPEG preview by default
+  (`PHOTO_SOURCE=auto`), which Immich already limits in size; with
+  `PHOTO_SOURCE=original` they're served untouched. The downscaler uses a simple box filter,
   not a high-quality resampling algorithm; it's fine for "smaller file
   for an old TV", not for archival-quality thumbnails.
 - DLNA compatibility varies a lot between TV brands (Samsung/LG/Sony each

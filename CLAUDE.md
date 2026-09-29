@@ -41,6 +41,11 @@ re-runs CI, builds release archives, and publishes a multi-arch image to
 
 ## Architecture
 
+`main.version` (set via `-ldflags -X`, see `release.yml` and the
+Dockerfile's `VERSION` build arg; falls back to Go's VCS stamp, then
+`dev`) becomes `dlna.Version`, reported in SERVER headers and the device
+description's `modelNumber`.
+
 Data flow: `main.go` wires together `config` → `immich` client → `cache`
 → `dlna` server, then runs the HTTP server and the SSDP responder
 concurrently until SIGINT/SIGTERM, which triggers a graceful shutdown
@@ -103,7 +108,8 @@ No such object` for unknown/invalid ObjectIDs or Immich 404s, `501 Action
 Failed` otherwise — `browseUserScope` returns errors, `handleBrowse`
 writes the fault.
 
-`buildAssetItem` (`contentdirectory.go`) picks each item's `<upnp:class>`
+`buildAssetItem` (`contentdirectory.go`, via `buildItem(itemSpec)` in
+`didl.go`) picks each item's `<upnp:class>`
 (`object.item.imageItem.photo` vs `object.item.videoItem.movie`) and
 `<upnp:albumArtURI>` based on `Asset.IsVideo()`: a photo uses its own
 `/media/{id}` URL as its own thumbnail, but a video's bytes can't double
@@ -111,6 +117,16 @@ as an image preview, so its albumArtURI instead points at
 `/thumbnail/{id}` — without *some* albumArtURI, media browsers (e.g. Home
 Assistant) list titles but show a placeholder icon instead of a
 thumbnail.
+
+Every `<res>` carries DLNA flags in `protocolInfo` (`dlnaFeatures`:
+`DLNA.ORG_OP=01` for byte seek, `CI`, `FLAGS`, no `PN`), mirrored as the
+`contentFeatures.dlna.org`/`transferMode.dlna.org` headers on media
+responses (`setMediaHeaders`); video items also get `duration` and
+`resolution`. `PHOTO_SOURCE` (`photosource.go`, default `auto`) decides
+per photo whether `/media/` serves the original or Immich's JPEG preview
+(`auto`: preview for anything not JPEG/PNG, e.g. HEIC) — decided both in
+Browse (item advertised as `image/jpeg`, `CI=1`, no size) and in
+`handleMedia` (`photoServedAsPreview`, via `GetAsset`), which must agree.
 
 `album:<id>` and `person:<id>` **containers** carry `<upnp:albumArtURI>`
 too, when a cover is available: albums reuse Immich's
