@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -96,6 +97,20 @@ type Config struct {
 	// lower resolution). Videos are unaffected. Set via PHOTO_SOURCE.
 	PhotoSource string
 
+	// VideoSource selects which bytes /media/ serves for videos:
+	// "original" (default) always serves the original file; "transcoded"
+	// serves Immich's playback version (GET /api/assets/{id}/video/
+	// playback) - whatever Immich transcoded under its own transcoding
+	// policy, H.264/AAC in MP4 by default, or the original where it didn't
+	// transcode. Set via VIDEO_SOURCE.
+	VideoSource string
+
+	// ExtraFolders lists the optional root folders to show next to
+	// Albums/People/Timeline, in order: "favorites", "onthisday",
+	// "places", "random". Set via EXTRA_FOLDERS (comma-separated, default
+	// "favorites,onthisday"; "none" for no extra folders).
+	ExtraFolders []string
+
 	// TimelineGrouping controls how the Timeline folder is organized:
 	// "none" (default) lists every photo/video flat, newest first; "year"
 	// adds one folder per year; "month" adds year folders containing one
@@ -173,6 +188,18 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf(`PHOTO_SOURCE must be "auto", "original" or "preview", got %q`, os.Getenv("PHOTO_SOURCE"))
 	}
 
+	cfg.VideoSource = strings.ToLower(getEnvDefault("VIDEO_SOURCE", "original"))
+	switch cfg.VideoSource {
+	case "original", "transcoded":
+	default:
+		return nil, fmt.Errorf(`VIDEO_SOURCE must be "original" or "transcoded", got %q`, os.Getenv("VIDEO_SOURCE"))
+	}
+
+	cfg.ExtraFolders, err = parseExtraFolders(getEnvDefault("EXTRA_FOLDERS", "favorites,onthisday"))
+	if err != nil {
+		return nil, err
+	}
+
 	cfg.TimelineGrouping = strings.ToLower(getEnvDefault("TIMELINE_GROUPING", "none"))
 	switch cfg.TimelineGrouping {
 	case "none", "year", "month":
@@ -185,6 +212,31 @@ func Load() (*Config, error) {
 	cfg.Debug = os.Getenv("DEBUG") == "true"
 
 	return cfg, nil
+}
+
+// validExtraFolders are the optional root folders EXTRA_FOLDERS may list.
+var validExtraFolders = []string{"favorites", "onthisday", "places", "random"}
+
+// parseExtraFolders parses EXTRA_FOLDERS: a comma-separated list of
+// validExtraFolders entries, in the order they should appear, or "none".
+// Duplicates are dropped; an unknown entry fails startup.
+func parseExtraFolders(s string) ([]string, error) {
+	s = strings.ToLower(strings.TrimSpace(s))
+	if s == "none" {
+		return nil, nil
+	}
+	var out []string
+	for _, f := range strings.Split(s, ",") {
+		f = strings.TrimSpace(f)
+		if f == "" || slices.Contains(out, f) {
+			continue
+		}
+		if !slices.Contains(validExtraFolders, f) {
+			return nil, fmt.Errorf("EXTRA_FOLDERS: unknown folder %q (valid: %s, or \"none\")", f, strings.Join(validExtraFolders, ", "))
+		}
+		out = append(out, f)
+	}
+	return out, nil
 }
 
 // parseAPIKeys builds the configured API key list. IMMICH_API_KEYS (a

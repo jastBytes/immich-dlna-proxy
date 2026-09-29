@@ -85,7 +85,8 @@ func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Re
 	case env.Body.GetSortCapabilities != nil:
 		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": "dc:title,dc:date"})
 	case env.Body.GetSystemUpdateID != nil:
-		writeSoapResponse(w, cdNS, "GetSystemUpdateIDResponse", map[string]string{"Id": "1"})
+		s.refreshSystemUpdateID()
+		writeSoapResponse(w, cdNS, "GetSystemUpdateIDResponse", map[string]string{"Id": s.updates.current()})
 	default:
 		http.Error(w, "unsupported action", http.StatusNotImplemented)
 	}
@@ -125,7 +126,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		"Result":         didl,
 		"NumberReturned": strconv.Itoa(returned),
 		"TotalMatches":   strconv.Itoa(total),
-		"UpdateID":       "1",
+		"UpdateID":       s.updates.current(),
 	})
 }
 
@@ -151,7 +152,7 @@ func (s *Server) browseMultiUser(objectID string, args *browseArgs, baseURL stri
 	case objectID == "0": // BrowseDirectChildren on root: one folder per configured account
 		fragments := make([]string, len(s.users))
 		for i, u := range s.users {
-			fragments[i] = buildContainer(userObjectID(i), "0", u.Name, 3, "")
+			fragments[i] = buildContainer(userObjectID(i), "0", u.Name, s.rootChildCount(), "")
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
@@ -213,9 +214,9 @@ func parseUserObjectID(objectID string, numUsers int) (idx int, local string, ok
 func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, err error) {
 	switch {
 	case local == "0" && args.BrowseFlag == "BrowseMetadata":
-		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, 3, "")), 1, 1, nil
+		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, s.rootChildCount(), "")), 1, 1, nil
 
-	case local == "0": // BrowseDirectChildren on this account's root: fixed "Albums" / "People" / "Timeline" folders
+	case local == "0": // BrowseDirectChildren on this account's root: fixed "Albums" / "People" / "Timeline" folders, then any EXTRA_FOLDERS
 		albums, err := client.ListAlbums()
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("ListAlbums: %w", err)
@@ -234,6 +235,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 			// render the root listing, which doesn't scale.
 			buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, ""),
 		}
+		fragments = append(fragments, s.extraRootContainers(childPrefix, rootSelfID)...)
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
 		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, nil
@@ -292,6 +294,9 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 
 	case local == "timeline", strings.HasPrefix(local, "timeline:"):
 		return s.browseTimeline(client, userIdx, childPrefix, local, rootSelfID, args, baseURL)
+
+	case s.extraFolderFor(local) != "":
+		return s.browseExtraFolder(client, userIdx, childPrefix, local, rootSelfID, args, baseURL)
 
 	case strings.HasPrefix(local, "album:"):
 		albumID := strings.TrimPrefix(local, "album:")
@@ -470,6 +475,10 @@ type itemOptions struct {
 	TitleDatePrefix           bool
 	TitleDatePrefixDescending bool
 	PhotoSource               string
+	VideoSource               string
+	// Downscaling is set when MAX_RESOLUTION is configured, so a served
+	// JPEG/PNG may be smaller than the original file.
+	Downscaling bool
 }
 
 func (s *Server) itemOptions() itemOptions {
@@ -477,6 +486,8 @@ func (s *Server) itemOptions() itemOptions {
 		TitleDatePrefix:           s.cfg.TitleDatePrefix,
 		TitleDatePrefixDescending: s.cfg.TitleDatePrefixDescending,
 		PhotoSource:               s.cfg.PhotoSource,
+		VideoSource:               s.cfg.VideoSource,
+		Downscaling:               s.cfg.MaxWidth > 0 && s.cfg.MaxHeight > 0,
 	}
 }
 
@@ -490,10 +501,16 @@ func (s *Server) itemOptions() itemOptions {
 // opts.TitleDatePrefix/TitleDatePrefixDescending select the title format
 // (see assetTitle). dc:date and the <res> size attribute are populated
 // whenever Immich provides them (capture time, EXIF file size) - see
-// itemSpec for why they matter - except that a photo served as Immich's
-// JPEG preview (opts.PhotoSource, see servesPreview) is advertised as
-// image/jpeg, flagged as converted, and has no size: its bytes aren't the
-// original file's. Videos additionally carry duration and resolution.
+// itemSpec for why they matter - except where the served bytes aren't
+// the original file's, so its size would be wrong: a photo served as
+// Immich's JPEG preview (opts.PhotoSource, see servesPreview) is
+// advertised as image/jpeg and flagged as converted; a video served as
+// Immich's playback version (opts.VideoSource) as video/mp4, flagged as
+// converted; and with MAX_RESOLUTION set, a photo may be downscaled. A
+// renderer that trusts size over Content-Length can otherwise cut an
+// image off or wait for bytes that never come. Videos additionally carry
+// duration, and resolution unless transcoded (Immich may have changed
+// it).
 func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, opts itemOptions) string {
 	resURL := mediaURL(baseURL, userIdx, a.ID)
 	it := itemSpec{
@@ -512,7 +529,11 @@ func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.A
 		it.IsVideo = true
 		it.AlbumArtURL = thumbnailURL(baseURL, userIdx, a.ID)
 		it.Duration = a.DLNADuration()
-		if w, h := a.ExifInfo.ExifImageWidth, a.ExifInfo.ExifImageHeight; w > 0 && h > 0 {
+		if opts.VideoSource == VideoSourceTranscoded {
+			it.MimeType = "video/mp4"
+			it.Converted = true
+			it.Size = 0
+		} else if w, h := a.ExifInfo.ExifImageWidth, a.ExifInfo.ExifImageHeight; w > 0 && h > 0 {
 			it.Resolution = fmt.Sprintf("%dx%d", w, h)
 		}
 	case servesPreview(opts.PhotoSource, a):
@@ -522,6 +543,9 @@ func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.A
 		it.Size = 0
 	default:
 		it.AlbumArtURL = resURL
+		if opts.Downscaling && displayableImage(a.OriginalMimeType) {
+			it.Size = 0 // only JPEG/PNG are ever downscaled
+		}
 	}
 	return buildItem(it)
 }

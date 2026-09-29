@@ -222,6 +222,12 @@ func (c *Client) ListTimelineAssets() ([]Asset, error) {
 	return c.searchMetadataAssets(map[string]any{"order": "desc"})
 }
 
+// ListFavoriteAssets returns every asset marked as a favorite, most
+// recently taken first.
+func (c *Client) ListFavoriteAssets() ([]Asset, error) {
+	return c.searchMetadataAssets(map[string]any{"isFavorite": true, "order": "desc"})
+}
+
 // searchMetadataAssets fetches every asset matching the given filter body
 // (e.g. {"albumIds": [...]}, {"personIds": [...]}, or {"order": "desc"} for
 // no filter at all) via POST /api/search/metadata, following "nextPage"
@@ -253,13 +259,16 @@ func (c *Client) searchMetadataAssets(filter map[string]any) ([]Asset, error) {
 }
 
 // mergePage returns a copy of filter with "page" set, leaving the caller's
-// map untouched (it's reused across pagination requests).
+// map untouched (it's reused across pagination requests). It also sets
+// "withExif": search results omit exifInfo unless asked for it, and
+// Browse needs it for items' size, resolution and place (country/city).
 func mergePage(filter map[string]any, page int) map[string]any {
-	body := make(map[string]any, len(filter)+1)
+	body := make(map[string]any, len(filter)+2)
 	for k, v := range filter {
 		body[k] = v
 	}
 	body["page"] = page
+	body["withExif"] = true
 	return body
 }
 
@@ -316,6 +325,47 @@ func (c *Client) OpenOriginalRange(ctx context.Context, assetID, rangeHeader str
 	}
 	return c.open(ctx, "OpenOriginalRange("+assetID+")", "/api/assets/"+idPath(assetID)+"/original", header,
 		http.StatusOK, http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable)
+}
+
+// DownloadPlayback fetches the complete bytes Immich serves for a video's
+// in-app playback (GET /api/assets/{id}/video/playback): the transcoded
+// version if Immich created one under its transcoding policy (by default
+// H.264/AAC in MP4), otherwise the original. Used instead of
+// DownloadOriginal with VIDEO_SOURCE=transcoded.
+func (c *Client) DownloadPlayback(ctx context.Context, assetID string) (body io.ReadCloser, mimeType string, err error) {
+	return c.stream(ctx, "DownloadPlayback("+assetID+")", "/api/assets/"+idPath(assetID)+"/video/playback")
+}
+
+// OpenPlaybackRange is OpenOriginalRange for the playback endpoint (see
+// DownloadPlayback).
+func (c *Client) OpenPlaybackRange(ctx context.Context, assetID, rangeHeader string) (*http.Response, error) {
+	var header http.Header
+	if rangeHeader != "" {
+		header = http.Header{"Range": {rangeHeader}}
+	}
+	return c.open(ctx, "OpenPlaybackRange("+assetID+")", "/api/assets/"+idPath(assetID)+"/video/playback", header,
+		http.StatusOK, http.StatusPartialContent, http.StatusRequestedRangeNotSatisfiable)
+}
+
+// Ping reports whether Immich is reachable and answering (GET
+// /api/server/ping, which needs no authentication), for the proxy's own
+// /healthz endpoint.
+func (c *Client) Ping(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, err := c.newRequest(ctx, http.MethodGet, "/api/server/ping", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return &StatusError{Op: "Ping", StatusCode: resp.StatusCode, Status: resp.Status}
+	}
+	return nil
 }
 
 // stream performs a binary GET against path via c.Stream, returning the

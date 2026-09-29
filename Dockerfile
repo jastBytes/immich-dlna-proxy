@@ -18,4 +18,8 @@ EXPOSE 8200/tcp
 EXPOSE 1900/udp
 VOLUME ["/config/cache"]
 USER 65532:65532
+# The binary probes its own /healthz (no curl in a scratch image): healthy
+# when the proxy is up and Immich answers.
+HEALTHCHECK --interval=30s --timeout=15s --start-period=10s --retries=3 \
+    CMD ["/usr/local/bin/immich-dlna-proxy", "healthcheck"]
 ENTRYPOINT ["/usr/local/bin/immich-dlna-proxy"]

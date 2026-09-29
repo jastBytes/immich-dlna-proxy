@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jastBytes/immich-dlna-proxy/config"
 	"github.com/jastBytes/immich-dlna-proxy/immich"
@@ -46,6 +47,10 @@ func (f *photoSourceImmich) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		mime := map[string]string{"jpg1": "image/jpeg", "heic1": "image/heic", "vid1": "video/quicktime"}[strings.Split(r.URL.Path, "/")[3]]
 		w.Header().Set("Content-Type", mime)
 		_, _ = w.Write([]byte("original-bytes"))
+	case strings.HasSuffix(r.URL.Path, "/video/playback"):
+		f.record(r.URL.Path)
+		w.Header().Set("Content-Type", "video/mp4")
+		http.ServeContent(w, r, "playback.mp4", time.Unix(0, 0), strings.NewReader("0123456789"))
 	case strings.HasSuffix(r.URL.Path, "/thumbnail"):
 		f.record(r.URL.Path + "?" + r.URL.RawQuery)
 		w.Header().Set("Content-Type", "image/jpeg")
@@ -63,10 +68,18 @@ func (f *photoSourceImmich) record(s string) {
 
 func newPhotoSourceServer(t *testing.T, mode string) (string, *photoSourceImmich) {
 	t.Helper()
+	return newMediaSourceServer(t, &config.Config{PhotoSource: mode})
+}
+
+// newMediaSourceServer starts a proxy (without disk cache) in front of a
+// photoSourceImmich fake, using cfg for everything but the Immich
+// connection settings.
+func newMediaSourceServer(t *testing.T, cfg *config.Config) (string, *photoSourceImmich) {
+	t.Helper()
 	fake := &photoSourceImmich{}
 	immichSrv := httptest.NewServer(fake)
 	t.Cleanup(immichSrv.Close)
-	cfg := &config.Config{ImmichURL: immichSrv.URL, APIKeys: []string{"k"}, FriendlyName: "Test", PhotoSource: mode}
+	cfg.ImmichURL, cfg.APIKeys, cfg.FriendlyName = immichSrv.URL, []string{"k"}, "Test"
 	ts := httptest.NewServer(NewServer(cfg, []UserClient{{Client: immich.New(immichSrv.URL, "k")}}, nil).Mux())
 	t.Cleanup(ts.Close)
 	return ts.URL, fake

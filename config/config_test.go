@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,7 +14,7 @@ func clearConfigEnv(t *testing.T) {
 		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
 		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX", "TITLE_DATE_PREFIX_DESC",
-		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG", "PHOTO_SOURCE",
+		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG", "PHOTO_SOURCE", "VIDEO_SOURCE", "EXTRA_FOLDERS",
 	} {
 		t.Setenv(k, "")
 	}
@@ -145,6 +146,12 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Debug {
 		t.Errorf("Debug default = true, want false")
+	}
+	if cfg.VideoSource != "original" {
+		t.Errorf("VideoSource default = %q, want original", cfg.VideoSource)
+	}
+	if strings.Join(cfg.ExtraFolders, ",") != "favorites,onthisday" {
+		t.Errorf("ExtraFolders default = %v, want [favorites onthisday]", cfg.ExtraFolders)
 	}
 	if cfg.PhotoSource != "auto" {
 		t.Errorf("PhotoSource default = %q, want auto", cfg.PhotoSource)
@@ -346,9 +353,33 @@ func TestLoadRejectsInvalidNewOptions(t *testing.T) {
 		{"ADVERTISE_IP": "not-an-ip"},
 		{"ADVERTISE_IP": "::1"},
 		{"PHOTO_SOURCE": "thumbnail"},
+		{"VIDEO_SOURCE": "hevc"},
+		{"EXTRA_FOLDERS": "favorites,memories"},
 	} {
 		if _, err := loadWith(t, env); err == nil {
 			t.Errorf("Load() with %v succeeded, want an error", env)
+		}
+	}
+}
+
+func TestParseExtraFolders(t *testing.T) {
+	cases := map[string]string{
+		"favorites,onthisday":          "favorites,onthisday",
+		" Places , random,places ":     "places,random",
+		"none":                         "",
+		"":                             "",
+		"random,favorites,onthisday,x": "error",
+	}
+	for in, want := range cases {
+		got, err := parseExtraFolders(in)
+		if want == "error" {
+			if err == nil {
+				t.Errorf("%q: want error, got %v", in, got)
+			}
+			continue
+		}
+		if err != nil || strings.Join(got, ",") != want {
+			t.Errorf("%q: got %v, %v; want %q", in, got, err, want)
 		}
 	}
 }

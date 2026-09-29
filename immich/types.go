@@ -47,6 +47,11 @@ type Asset struct {
 		// (see buildAssetItem). Zero when unknown.
 		ExifImageWidth  int `json:"exifImageWidth"`
 		ExifImageHeight int `json:"exifImageHeight"`
+		// Country and City are Immich's reverse-geocoded place for a
+		// geotagged asset, used by the optional "Places" folder. Empty
+		// (or null in the JSON) when unknown.
+		Country string `json:"country"`
+		City    string `json:"city"`
 	} `json:"exifInfo"`
 	// Duration is a video's length as Immich reports it, "H:MM:SS.ffffff"
 	// (e.g. "0:01:05.250000"); photos report "0:00:00.00000". See

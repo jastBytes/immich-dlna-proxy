@@ -94,9 +94,10 @@ func (e *listingEntry) isDone() bool {
 // cachedClient is the subset of immich.Client that Browse uses, fronted
 // by the listing cache. prefix keeps different accounts' entries apart.
 type cachedClient struct {
-	client *immich.Client
-	cache  *listingCache
-	prefix string
+	client  *immich.Client
+	cache   *listingCache
+	prefix  string
+	updates *updateTracker
 }
 
 func (s *Server) cachedClient(userIdx int) cachedClient {
@@ -104,11 +105,19 @@ func (s *Server) cachedClient(userIdx int) cachedClient {
 	if idx < 0 {
 		idx = 0
 	}
-	return cachedClient{client: s.users[idx].Client, cache: s.listings, prefix: strconv.Itoa(idx) + "|"}
+	return cachedClient{client: s.users[idx].Client, cache: s.listings, prefix: strconv.Itoa(idx) + "|", updates: s.updates}
 }
 
+// ListAlbums also feeds the SystemUpdateID tracker whenever the listing is
+// actually fetched from Immich (not on a listing-cache hit).
 func (c cachedClient) ListAlbums() ([]immich.Album, error) {
-	return cachedListing(c.cache, c.prefix+"albums", c.client.ListAlbums)
+	return cachedListing(c.cache, c.prefix+"albums", func() ([]immich.Album, error) {
+		albums, err := c.client.ListAlbums()
+		if err == nil {
+			c.updates.observe(c.prefix+"albums", hashAlbums(albums))
+		}
+		return albums, err
+	})
 }
 
 func (c cachedClient) GetAlbum(id string) (*immich.Album, error) {
@@ -119,8 +128,19 @@ func (c cachedClient) GetAlbumAssets(id string) ([]immich.Asset, error) {
 	return cachedListing(c.cache, c.prefix+"album-assets:"+id, func() ([]immich.Asset, error) { return c.client.GetAlbumAssets(id) })
 }
 
+// ListPeople feeds the SystemUpdateID tracker like ListAlbums.
 func (c cachedClient) ListPeople() ([]immich.Person, error) {
-	return cachedListing(c.cache, c.prefix+"people", c.client.ListPeople)
+	return cachedListing(c.cache, c.prefix+"people", func() ([]immich.Person, error) {
+		people, err := c.client.ListPeople()
+		if err == nil {
+			c.updates.observe(c.prefix+"people", hashPeople(people))
+		}
+		return people, err
+	})
+}
+
+func (c cachedClient) ListFavoriteAssets() ([]immich.Asset, error) {
+	return cachedListing(c.cache, c.prefix+"favorites", c.client.ListFavoriteAssets)
 }
 
 func (c cachedClient) GetPerson(id string) (*immich.Person, error) {

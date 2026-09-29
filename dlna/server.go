@@ -59,6 +59,10 @@ type Server struct {
 	// listings briefly caches Immich listing responses for Browse - see
 	// listingCache.
 	listings *listingCache
+
+	// updates maintains ContentDirectory's SystemUpdateID - see
+	// updateTracker.
+	updates *updateTracker
 }
 
 // flight is one in-progress cache fill for a cache key.
@@ -78,7 +82,7 @@ func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
 		concurrency = 4
 	}
 	debugLogging.Store(cfg.Debug)
-	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL)}
+	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL), updates: newUpdateTracker()}
 }
 
 func (s *Server) Mux() http.Handler {
@@ -96,8 +100,25 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/media/", s.handleMedia)
 	mux.HandleFunc("/media/person/", s.handlePersonThumbnail)
 	mux.HandleFunc("/thumbnail/", s.handleThumbnail)
+	mux.HandleFunc("/healthz", s.handleHealthz)
 
 	return loggingMiddleware(upnpHeadersMiddleware(mux))
+}
+
+// handleHealthz answers container health checks (the Dockerfile's
+// HEALTHCHECK runs `immich-dlna-proxy healthcheck`, which requests this):
+// 200 when this server is up and Immich answers its ping, 503 otherwise,
+// so Docker/Unraid show the container as unhealthy when the proxy is
+// running but can't reach Immich. All configured accounts share one
+// Immich server, so pinging it once covers them all.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if err := s.users[0].Client.Ping(r.Context()); err != nil {
+		log.Printf("healthz: Immich unreachable: %v", err)
+		http.Error(w, "immich unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "ok\n")
 }
 
 // upnpHeadersMiddleware sets the SERVER and EXT headers UPnP/DLNA clients
@@ -210,12 +231,18 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// rotation baked into the pixels themselves to display upright.
 	s.serveMedia(w, r, assetID, mediaSource{
 		fetch: func(ctx context.Context) (io.ReadCloser, string, error) {
-			if s.photoServedAsPreview(userIdx, assetID) {
+			switch s.mediaVariantFor(userIdx, assetID) {
+			case variantPreview:
 				return client.GetAssetThumbnail(ctx, assetID)
+			case variantPlayback:
+				return client.DownloadPlayback(ctx, assetID)
 			}
 			return client.DownloadOriginal(ctx, assetID)
 		},
 		openRange: func(ctx context.Context, rangeHeader string) (*http.Response, error) {
+			if s.servesTranscoded() {
+				return client.OpenPlaybackRange(ctx, assetID, rangeHeader)
+			}
 			return client.OpenOriginalRange(ctx, assetID, rangeHeader)
 		},
 		transform: func(data []byte) []byte {
@@ -223,26 +250,6 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 			return s.maybeResize(assetID, data)
 		},
 	})
-}
-
-// photoServedAsPreview reports whether /media/ should serve Immich's JPEG
-// preview for this asset instead of its original file (PHOTO_SOURCE, see
-// servesPreview) - the same decision buildAssetItem made when it
-// advertised the item as image/jpeg. It needs the asset's type and MIME
-// type, so outside PHOTO_SOURCE=original it looks the asset up (through
-// the listing cache, which the Browse that listed it has usually just
-// filled). Only called on a cache miss. If the lookup fails, it falls
-// back to the original file rather than failing the request.
-func (s *Server) photoServedAsPreview(userIdx int, assetID string) bool {
-	if s.cfg.PhotoSource == "" || s.cfg.PhotoSource == PhotoSourceOriginal {
-		return false
-	}
-	a, err := s.cachedClient(userIdx).GetAsset(assetID)
-	if err != nil {
-		log.Printf("GetAsset(%s) failed, serving the original: %v", assetID, err)
-		return false
-	}
-	return servesPreview(s.cfg.PhotoSource, *a)
 }
 
 // handlePersonThumbnail serves a person's face-crop thumbnail, used as
