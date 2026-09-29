@@ -88,6 +88,14 @@ type Config struct {
 	// separately (CacheDir) and unaffected.
 	ListingCacheTTL time.Duration
 
+	// PhotoSource selects which bytes /media/ serves for photos:
+	// "auto" (default) serves JPEG/PNG originals as-is and anything else
+	// (HEIC, WebP, TIFF, ...) as Immich's generated JPEG preview, since
+	// most TVs can't display those formats; "original" always serves the
+	// original file; "preview" always serves the preview (smaller, faster,
+	// lower resolution). Videos are unaffected. Set via PHOTO_SOURCE.
+	PhotoSource string
+
 	// TimelineGrouping controls how the Timeline folder is organized:
 	// "none" (default) lists every photo/video flat, newest first; "year"
 	// adds one folder per year; "month" adds year folders containing one
@@ -157,6 +165,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("LISTING_CACHE_SECONDS must be a non-negative integer, got %q", listingTTL)
 	}
 	cfg.ListingCacheTTL = time.Duration(secs) * time.Second
+
+	cfg.PhotoSource = strings.ToLower(getEnvDefault("PHOTO_SOURCE", "auto"))
+	switch cfg.PhotoSource {
+	case "auto", "original", "preview":
+	default:
+		return nil, fmt.Errorf(`PHOTO_SOURCE must be "auto", "original" or "preview", got %q`, os.Getenv("PHOTO_SOURCE"))
+	}
 
 	cfg.TimelineGrouping = strings.ToLower(getEnvDefault("TIMELINE_GROUPING", "none"))
 	switch cfg.TimelineGrouping {

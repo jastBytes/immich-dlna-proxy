@@ -13,7 +13,7 @@ func clearConfigEnv(t *testing.T) {
 		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
 		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX", "TITLE_DATE_PREFIX_DESC",
-		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG",
+		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG", "PHOTO_SOURCE",
 	} {
 		t.Setenv(k, "")
 	}
@@ -145,6 +145,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Debug {
 		t.Errorf("Debug default = true, want false")
+	}
+	if cfg.PhotoSource != "auto" {
+		t.Errorf("PhotoSource default = %q, want auto", cfg.PhotoSource)
 	}
 }
 
@@ -313,6 +316,7 @@ func TestLoadNewOptions(t *testing.T) {
 		"TIMELINE_GROUPING":     "Month",
 		"ADVERTISE_IP":          "192.168.1.50",
 		"DEBUG":                 "true",
+		"PHOTO_SOURCE":          "Preview",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -329,6 +333,9 @@ func TestLoadNewOptions(t *testing.T) {
 	if !cfg.Debug {
 		t.Error("Debug = false, want true")
 	}
+	if cfg.PhotoSource != "preview" {
+		t.Errorf("PhotoSource = %q, want preview", cfg.PhotoSource)
+	}
 }
 
 func TestLoadRejectsInvalidNewOptions(t *testing.T) {
@@ -338,6 +345,7 @@ func TestLoadRejectsInvalidNewOptions(t *testing.T) {
 		{"TIMELINE_GROUPING": "week"},
 		{"ADVERTISE_IP": "not-an-ip"},
 		{"ADVERTISE_IP": "::1"},
+		{"PHOTO_SOURCE": "thumbnail"},
 	} {
 		if _, err := loadWith(t, env); err == nil {
 			t.Errorf("Load() with %v succeeded, want an error", env)

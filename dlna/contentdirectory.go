@@ -318,7 +318,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.itemOptions()))
 		}
 		return wrapDIDL(b.String()), len(paged), total, nil
 
@@ -345,7 +345,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.itemOptions()))
 		}
 		return wrapDIDL(b.String()), len(paged), total, nil
 
@@ -358,7 +358,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("GetAsset(%s): %w", assetID, err)
 		}
-		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending)), 1, 1, nil
+		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.itemOptions())), 1, 1, nil
 
 	default:
 		return "", 0, 0, errNoSuchObject
@@ -464,29 +464,66 @@ func filterSupportedAssets(assets []immich.Asset) []immich.Asset {
 	return out
 }
 
+// itemOptions are the configuration-driven choices buildAssetItem makes
+// for every item - see config.Config's fields of the same names.
+type itemOptions struct {
+	TitleDatePrefix           bool
+	TitleDatePrefixDescending bool
+	PhotoSource               string
+}
+
+func (s *Server) itemOptions() itemOptions {
+	return itemOptions{
+		TitleDatePrefix:           s.cfg.TitleDatePrefix,
+		TitleDatePrefixDescending: s.cfg.TitleDatePrefixDescending,
+		PhotoSource:               s.cfg.PhotoSource,
+	}
+}
+
 // buildAssetItem renders the DIDL-Lite <item> for one asset, with id and
 // parentID as given (see browseUserScope's childPrefix, which the caller
 // has already applied). Videos use Immich's generated thumbnail as their
-// albumArtURI (see buildItem/GetAssetThumbnail) since a video's own bytes
-// can't double as a preview image the way a photo's can. userIdx scopes
-// both the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL
-// do, so /media/ and /thumbnail/ know which account's API key to fetch
-// with. datePrefixTitles/datePrefixDescending mirror
-// config.Config.TitleDatePrefix/TitleDatePrefixDescending - see
-// assetTitle. dc:date and the <res> size attribute are populated whenever
-// Immich provides them (capture time, EXIF file size), independent of
-// either date-prefix setting - see buildItem for why they matter.
-func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, datePrefixTitles, datePrefixDescending bool) string {
+// albumArtURI (see GetAssetThumbnail) since a video's own bytes can't
+// double as a preview image the way a photo's can. userIdx scopes both
+// the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL do,
+// so /media/ and /thumbnail/ know which account's API key to fetch with.
+// opts.TitleDatePrefix/TitleDatePrefixDescending select the title format
+// (see assetTitle). dc:date and the <res> size attribute are populated
+// whenever Immich provides them (capture time, EXIF file size) - see
+// itemSpec for why they matter - except that a photo served as Immich's
+// JPEG preview (opts.PhotoSource, see servesPreview) is advertised as
+// image/jpeg, flagged as converted, and has no size: its bytes aren't the
+// original file's. Videos additionally carry duration and resolution.
+func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, opts itemOptions) string {
 	resURL := mediaURL(baseURL, userIdx, a.ID)
-	title := assetTitle(a, datePrefixTitles, datePrefixDescending)
-	dcDate := ""
+	it := itemSpec{
+		ID:       id,
+		ParentID: parentID,
+		Title:    assetTitle(a, opts.TitleDatePrefix, opts.TitleDatePrefixDescending),
+		MimeType: a.OriginalMimeType,
+		ResURL:   resURL,
+		Size:     a.ExifInfo.FileSizeInByte,
+	}
 	if capturedAt := a.CapturedAt(); !capturedAt.IsZero() {
-		dcDate = capturedAt.Format("2006-01-02")
+		it.Date = capturedAt.Format("2006-01-02")
 	}
-	if a.IsVideo() {
-		return buildItem(id, parentID, title, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true, dcDate, a.ExifInfo.FileSizeInByte)
+	switch {
+	case a.IsVideo():
+		it.IsVideo = true
+		it.AlbumArtURL = thumbnailURL(baseURL, userIdx, a.ID)
+		it.Duration = a.DLNADuration()
+		if w, h := a.ExifInfo.ExifImageWidth, a.ExifInfo.ExifImageHeight; w > 0 && h > 0 {
+			it.Resolution = fmt.Sprintf("%dx%d", w, h)
+		}
+	case servesPreview(opts.PhotoSource, a):
+		it.AlbumArtURL = resURL
+		it.MimeType = "image/jpeg"
+		it.Converted = true
+		it.Size = 0
+	default:
+		it.AlbumArtURL = resURL
 	}
-	return buildItem(id, parentID, title, a.OriginalMimeType, resURL, resURL, false, dcDate, a.ExifInfo.FileSizeInByte)
+	return buildItem(it)
 }
 
 // farFutureUnix anchors the countdown prefix assetTitle uses in descending

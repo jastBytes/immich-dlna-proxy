@@ -210,6 +210,9 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// rotation baked into the pixels themselves to display upright.
 	s.serveMedia(w, r, assetID, mediaSource{
 		fetch: func(ctx context.Context) (io.ReadCloser, string, error) {
+			if s.photoServedAsPreview(userIdx, assetID) {
+				return client.GetAssetThumbnail(ctx, assetID)
+			}
 			return client.DownloadOriginal(ctx, assetID)
 		},
 		openRange: func(ctx context.Context, rangeHeader string) (*http.Response, error) {
@@ -220,6 +223,26 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 			return s.maybeResize(assetID, data)
 		},
 	})
+}
+
+// photoServedAsPreview reports whether /media/ should serve Immich's JPEG
+// preview for this asset instead of its original file (PHOTO_SOURCE, see
+// servesPreview) - the same decision buildAssetItem made when it
+// advertised the item as image/jpeg. It needs the asset's type and MIME
+// type, so outside PHOTO_SOURCE=original it looks the asset up (through
+// the listing cache, which the Browse that listed it has usually just
+// filled). Only called on a cache miss. If the lookup fails, it falls
+// back to the original file rather than failing the request.
+func (s *Server) photoServedAsPreview(userIdx int, assetID string) bool {
+	if s.cfg.PhotoSource == "" || s.cfg.PhotoSource == PhotoSourceOriginal {
+		return false
+	}
+	a, err := s.cachedClient(userIdx).GetAsset(assetID)
+	if err != nil {
+		log.Printf("GetAsset(%s) failed, serving the original: %v", assetID, err)
+		return false
+	}
+	return servesPreview(s.cfg.PhotoSource, *a)
 }
 
 // handlePersonThumbnail serves a person's face-crop thumbnail, used as
@@ -398,7 +421,7 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 	}
 
 	if s.cache == nil {
-		w.Header().Set("Content-Type", mimeType)
+		setMediaHeaders(w, mimeType)
 		http.ServeContent(w, r, cacheKey, time.Now(), bytes.NewReader(data))
 		return
 	}
@@ -424,7 +447,7 @@ func (s *Server) serveFromCache(w http.ResponseWriter, r *http.Request, cacheKey
 		return false
 	}
 	defer func() { _ = f.Close() }()
-	w.Header().Set("Content-Type", mimeType)
+	setMediaHeaders(w, mimeType)
 	http.ServeContent(w, r, cacheKey, modTime, f)
 	return true
 }
@@ -437,7 +460,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, name, mimeType string, f 
 		http.Error(w, "cache error", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", mimeType)
+	setMediaHeaders(w, mimeType)
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
@@ -502,6 +525,7 @@ func (s *Server) proxyRange(w http.ResponseWriter, r *http.Request, cacheKey str
 	if w.Header().Get("Accept-Ranges") == "" {
 		w.Header().Set("Accept-Ranges", "bytes")
 	}
+	setDLNAHeaders(w, resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
 	if r.Method == http.MethodHead {
 		return
@@ -522,6 +546,30 @@ func upstreamError(w http.ResponseWriter, cacheKey string, err error) {
 	http.Error(w, "upstream error", http.StatusBadGateway)
 }
 
+// setMediaHeaders sets the Content-Type and DLNA headers for serving
+// media bytes of the given MIME type.
+func setMediaHeaders(w http.ResponseWriter, mimeType string) {
+	w.Header().Set("Content-Type", mimeType)
+	setDLNAHeaders(w, mimeType)
+}
+
+// setDLNAHeaders sets the DLNA transfer headers minidlna sends with media:
+// transferMode.dlna.org (Streaming for video, Interactive for images)
+// and contentFeatures.dlna.org (the same flags as the item's
+// protocolInfo, see dlnaFeatures). Samsung and LG renderers ask for the
+// latter via getcontentFeatures.dlna.org and use it to decide whether a
+// stream is seekable; sending it unconditionally is harmless to clients
+// that don't care.
+func setDLNAHeaders(w http.ResponseWriter, mimeType string) {
+	video := isVideoMimeType(mimeType)
+	mode := "Interactive"
+	if video {
+		mode = "Streaming"
+	}
+	w.Header().Set("transferMode.dlna.org", mode)
+	w.Header().Set("contentFeatures.dlna.org", dlnaFeatures(video, false))
+}
+
 // isVideoMimeType reports whether mimeType (as returned by Immich's
 // Content-Type header) identifies a video asset.
 func isVideoMimeType(mimeType string) bool {
@@ -533,7 +581,7 @@ func isVideoMimeType(mimeType string) bool {
 // works) or, with caching disabled, copying them straight to the client.
 func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, cacheKey, mimeType string, body io.Reader) {
 	if s.cache == nil {
-		w.Header().Set("Content-Type", mimeType)
+		setMediaHeaders(w, mimeType)
 		if _, err := io.Copy(w, body); err != nil {
 			log.Printf("stream %s failed: %v", cacheKey, err)
 		}

@@ -84,28 +84,28 @@ func TestBuildContainerEscapesAlbumArtURI(t *testing.T) {
 }
 
 func TestBuildItemDefaultsMimeType(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "", "http://host/media/a1", "http://host/media/a1", false, "", 0)
-	if !strings.Contains(item, `protocolInfo="http-get:*:image/jpeg:*"`) {
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "photo.jpg", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1"})
+	if !strings.Contains(item, `protocolInfo="http-get:*:image/jpeg:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000"`) {
 		t.Errorf("expected default mime type image/jpeg, got: %s", item)
 	}
 }
 
 func TestBuildItemUsesGivenMimeType(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.png", "image/png", "http://host/media/a1", "http://host/media/a1", false, "", 0)
-	if !strings.Contains(item, `protocolInfo="http-get:*:image/png:*"`) {
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "photo.png", MimeType: "image/png", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1"})
+	if !strings.Contains(item, `protocolInfo="http-get:*:image/png:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000"`) {
 		t.Errorf("expected mime type image/png, got: %s", item)
 	}
 }
 
 func TestBuildItemIncludesAlbumArtURI(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "", 0)
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "photo.jpg", MimeType: "image/jpeg", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1"})
 	if !strings.Contains(item, "<upnp:albumArtURI>http://host/media/a1</upnp:albumArtURI>") {
 		t.Errorf("expected albumArtURI matching res URL, got: %s", item)
 	}
 }
 
 func TestBuildItemEscapesTitleAndURL(t *testing.T) {
-	item := buildItem("asset:a1", "albums", `weird & <title>.jpg`, "image/jpeg", "http://host/media/a1?x=1&y=2", "http://host/media/a1?x=1&y=2", false, "", 0)
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: `weird & <title>.jpg`, MimeType: "image/jpeg", ResURL: "http://host/media/a1?x=1&y=2", AlbumArtURL: "http://host/media/a1?x=1&y=2"})
 	if strings.Contains(item, `weird & <title>.jpg`) {
 		t.Errorf("title was not escaped: %s", item)
 	}
@@ -118,40 +118,40 @@ func TestBuildItemEscapesTitleAndURL(t *testing.T) {
 }
 
 func TestBuildItemUsesVideoClassAndDefaultMimeType(t *testing.T) {
-	item := buildItem("asset:v1", "albums", "clip.mp4", "", "http://host/media/v1", "http://host/thumbnail/v1", true, "", 0)
+	item := buildItem(itemSpec{ID: "asset:v1", ParentID: "albums", Title: "clip.mp4", ResURL: "http://host/media/v1", AlbumArtURL: "http://host/thumbnail/v1", IsVideo: true})
 	if !strings.Contains(item, "<upnp:class>object.item.videoItem.movie</upnp:class>") {
 		t.Errorf("expected videoItem.movie class, got: %s", item)
 	}
-	if !strings.Contains(item, `protocolInfo="http-get:*:video/mp4:*"`) {
+	if !strings.Contains(item, `protocolInfo="http-get:*:video/mp4:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"`) {
 		t.Errorf("expected default mime type video/mp4, got: %s", item)
 	}
 	if !strings.Contains(item, "<upnp:albumArtURI>http://host/thumbnail/v1</upnp:albumArtURI>") {
 		t.Errorf("expected albumArtURI pointing at the thumbnail endpoint, got: %s", item)
 	}
-	if !strings.Contains(item, `<res protocolInfo="http-get:*:video/mp4:*">http://host/media/v1</res>`) {
+	if !strings.Contains(item, `<res protocolInfo="http-get:*:video/mp4:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000">http://host/media/v1</res>`) {
 		t.Errorf("expected res URL pointing at /media, got: %s", item)
 	}
 }
 
 func TestBuildItemPhotoUsesPhotoClass(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "", 0)
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "photo.jpg", MimeType: "image/jpeg", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1"})
 	if !strings.Contains(item, "<upnp:class>object.item.imageItem.photo</upnp:class>") {
 		t.Errorf("expected imageItem.photo class, got: %s", item)
 	}
 }
 
 func TestBuildItemIncludesDateAndSizeWhenKnown(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "2024-05-01", 123456)
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "photo.jpg", MimeType: "image/jpeg", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1", Date: "2024-05-01", Size: 123456})
 	if !strings.Contains(item, "<dc:date>2024-05-01</dc:date>") {
 		t.Errorf("expected dc:date element, got: %s", item)
 	}
-	if !strings.Contains(item, `<res protocolInfo="http-get:*:image/jpeg:*" size="123456">http://host/media/a1</res>`) {
+	if !strings.Contains(item, `<res protocolInfo="http-get:*:image/jpeg:DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=00f00000000000000000000000000000" size="123456">http://host/media/a1</res>`) {
 		t.Errorf("expected res size attribute, got: %s", item)
 	}
 }
 
 func TestBuildItemOmitsDateAndSizeWhenUnknown(t *testing.T) {
-	item := buildItem("asset:a1", "albums", "photo.jpg", "image/jpeg", "http://host/media/a1", "http://host/media/a1", false, "", 0)
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "photo.jpg", MimeType: "image/jpeg", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1"})
 	if strings.Contains(item, "<dc:date>") {
 		t.Errorf("expected no dc:date element, got: %s", item)
 	}
@@ -192,5 +192,20 @@ func TestXMLAttrEscape(t *testing.T) {
 		if got := xmlAttrEscape(in); got != want {
 			t.Errorf("xmlAttrEscape(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestBuildItemVideoDurationAndResolution(t *testing.T) {
+	item := buildItem(itemSpec{ID: "asset:v1", ParentID: "albums", Title: "clip.mp4", ResURL: "http://host/media/v1", AlbumArtURL: "http://host/thumbnail/v1",
+		IsVideo: true, Duration: "0:01:05.250", Resolution: "1920x1080"})
+	if !strings.Contains(item, ` duration="0:01:05.250" resolution="1920x1080">http://host/media/v1</res>`) {
+		t.Errorf("expected duration and resolution attributes, got: %s", item)
+	}
+}
+
+func TestBuildItemConvertedIsFlagged(t *testing.T) {
+	item := buildItem(itemSpec{ID: "asset:a1", ParentID: "albums", Title: "IMG.HEIC", MimeType: "image/jpeg", ResURL: "http://host/media/a1", AlbumArtURL: "http://host/media/a1", Converted: true})
+	if !strings.Contains(item, `protocolInfo="http-get:*:image/jpeg:DLNA.ORG_OP=01;DLNA.ORG_CI=1;`) {
+		t.Errorf("expected DLNA.ORG_CI=1 for converted content, got: %s", item)
 	}
 }

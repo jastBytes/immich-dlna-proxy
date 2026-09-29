@@ -91,3 +91,23 @@ func TestPersonHasThumbnail(t *testing.T) {
 		}
 	}
 }
+
+func TestDLNADuration(t *testing.T) {
+	cases := []struct {
+		typ, in, want string
+	}{
+		{"VIDEO", "0:01:05.250000", "0:01:05.250"},
+		{"VIDEO", "1:02:03.5", "1:02:03.5"},
+		{"VIDEO", "12:00:00", "12:00:00"},
+		{"VIDEO", "0:00:00.00000", ""}, // zero length
+		{"VIDEO", "", ""},
+		{"VIDEO", "garbage", ""},
+		{"VIDEO", "0:1:05.2", ""},
+		{"IMAGE", "0:00:05.000000", ""}, // photos never get a duration
+	}
+	for _, c := range cases {
+		if got := (Asset{Type: c.typ, Duration: c.in}).DLNADuration(); got != c.want {
+			t.Errorf("%s %q: got %q, want %q", c.typ, c.in, got, c.want)
+		}
+	}
+}
