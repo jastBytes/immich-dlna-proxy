@@ -23,8 +23,10 @@ Written in Go, no external dependencies — just the standard library.
   `GET /api/people/{id}/assets`, `POST /api/search/metadata`) and maps the
   root to three folders, "Albums", "People", and "Timeline" (every
   photo/video, newest first - optionally grouped into year or month
-  folders via `TIMELINE_GROUPING`), each album/person to a DLNA *container*
-  (folder), and each photo/video asset to a DLNA *item*.
+  folders via `TIMELINE_GROUPING`), plus optional "Favorites", "On this
+  day", "Places" and "Random" folders (`EXTRA_FOLDERS`), each
+  album/person to a DLNA *container* (folder), and each photo/video
+  asset to a DLNA *item*.
 - **X_MS_MediaReceiverRegistrar**: a Microsoft-defined UPnP extension some
   clients (Xbox, Windows Media Player, some Samsung firmwares) require to
   be present before they'll browse a server's content at all - the proxy
@@ -86,6 +88,9 @@ asset type is skipped.
 | `CACHE_MAX_MB`     | no       | `2048`           | Soft size budget in MB before LRU eviction kicks in |
 | `DISABLE_CACHE`    | no       | `false`          | Set to `true` to disable caching entirely       |
 | `PHOTO_SOURCE`     | no       | `auto`           | `auto`: JPEG/PNG as original, HEIC & other formats TVs can't show as Immich's JPEG preview. `original` / `preview` force one or the other. |
+| `VIDEO_SOURCE`     | no       | `original`       | `transcoded` serves the version Immich transcoded (H.264 MP4 by default) for TVs that can't play HEVC/MKV etc. |
+| `EXTRA_FOLDERS`    | no       | `favorites,onthisday` | Optional root folders, in order: `favorites`, `onthisday`, `places`, `random` (or `none`) |
+| `TZ`               | no       | `UTC`            | Time zone for the "On this day" folder, e.g. `Europe/Berlin` |
 | `MAX_RESOLUTION`   | no       | (unset = disabled) | Downscale photos larger than this to fit, e.g. `1920x1080`. Aspect ratio is preserved; smaller images are left untouched. |
 | `MEDIA_FETCH_CONCURRENCY` | no | `4`         | Max photos/thumbnails allowed to download from Immich at once; extra requests queue for a free slot (giving up after 30s) instead of piling onto Immich |
 | `LISTING_CACHE_SECONDS` | no | `30`         | How long album/people/timeline listings are reused across `Browse` calls; `0` always asks Immich live |
