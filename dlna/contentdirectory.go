@@ -645,10 +645,10 @@ func writeRawUPnPResponseStatus(w http.ResponseWriter, status int, body string) 
 		"Content-Type: text/xml; charset=\"utf-8\"\r\n"+
 		"Connection: close\r\n"+
 		"Content-Length: %d\r\n"+
-		"Server: Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0\r\n"+
+		"Server: %s\r\n"+
 		"Date: %s\r\n"+
 		"EXT:\r\n\r\n%s",
-		status, http.StatusText(status), len(body), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
+		status, http.StatusText(status), len(body), serverHeader(), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
 		return
 	}
 	_ = buf.Flush()

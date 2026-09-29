@@ -127,7 +127,7 @@ func sendSearchReply(conn *net.UDPConn, dst *net.UDPAddr, uuid, location, st str
 		"CACHE-CONTROL: max-age=1800\r\n" +
 		"EXT:\r\n" +
 		"LOCATION: " + location + "\r\n" +
-		"SERVER: Linux UPnP/1.0 immich-dlna-proxy/1.0\r\n" +
+		"SERVER: " + ssdpServerHeader() + "\r\n" +
 		"ST: " + st + "\r\n" +
 		"USN: " + usn + "\r\n" +
 		"\r\n"
@@ -181,7 +181,7 @@ func sendAlive(conn *net.UDPConn, group *net.UDPAddr, uuid, location string) {
 			"LOCATION: " + location + "\r\n" +
 			"NT: " + nt + "\r\n" +
 			"NTS: ssdp:alive\r\n" +
-			"SERVER: Linux UPnP/1.0 immich-dlna-proxy/1.0\r\n" +
+			"SERVER: " + ssdpServerHeader() + "\r\n" +
 			"USN: " + usn + "\r\n" +
 			"\r\n"
 		if _, err := conn.WriteToUDP([]byte(notify), group); err != nil {

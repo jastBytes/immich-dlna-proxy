@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
 
@@ -17,7 +18,28 @@ import (
 	"github.com/jastBytes/immich-dlna-proxy/immich"
 )
 
+// version is set at build time via -ldflags "-X main.version=v1.2.3" (see
+// release.yml and the Dockerfile's VERSION build arg). Empty means it
+// wasn't, and buildVersion falls back to what the Go toolchain recorded.
+var version string
+
+// buildVersion returns the version to report: the ldflags-injected one if
+// set, else the module version the Go toolchain stamped from VCS (e.g. for
+// `go install ...@v0.2.0`), else "dev".
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
+
 func main() {
+	dlna.Version = buildVersion()
+	log.Printf("immich-dlna-proxy %s", dlna.Version)
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config error: %v", err)

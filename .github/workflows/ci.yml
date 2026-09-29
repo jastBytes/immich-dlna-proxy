@@ -141,6 +141,8 @@ jobs:
           tags: |
             ${{ steps.meta.outputs.image }}:pr-${{ github.event.pull_request.number }}
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
+          build-args: |
+            VERSION=pr-${{ github.event.pull_request.number }}-${{ steps.meta.outputs.short_sha }}
 
   # Builds and pushes an image to the -preview suffixed package on every
   # push to main.
@@ -207,3 +209,5 @@ jobs:
             ${{ steps.meta.outputs.image }}:latest
             ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.short_sha }}
             ${{ steps.meta.outputs.image }}:${{ steps.version.outputs.resolved_version }}
+          build-args: |
+            VERSION=v${{ steps.version.outputs.resolved_version }}-preview-${{ steps.meta.outputs.short_sha }}

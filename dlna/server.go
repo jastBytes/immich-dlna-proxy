@@ -113,7 +113,7 @@ func (s *Server) Mux() http.Handler {
 // embedded client stack apparently isn't.
 func upnpHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server", "Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0")
+		w.Header().Set("Server", serverHeader())
 		w.Header()["EXT"] = []string{""}
 		next.ServeHTTP(w, r)
 	})

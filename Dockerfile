@@ -2,7 +2,10 @@ FROM golang:1.26.5-alpine AS build
 RUN apk add --no-cache ca-certificates
 WORKDIR /src
 COPY . .
-RUN CGO_ENABLED=0 go build -o /immich-dlna-proxy . && \
+# Version reported to DLNA clients and in the startup log; release.yml passes
+# the tag (e.g. v0.2.0), CI builds pass the commit.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 go build -ldflags "-X main.version=${VERSION}" -o /immich-dlna-proxy . && \
     mkdir -p /config/cache && chown -R 65532:65532 /config
 
 FROM scratch

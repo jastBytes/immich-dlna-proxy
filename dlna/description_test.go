@@ -120,3 +120,23 @@ func TestHandleConnectionManagerSCPD(t *testing.T) {
 		}
 	}
 }
+
+// The build's version is reported as the device's modelNumber and in the
+// SERVER header, instead of a hard-coded "1.0".
+func TestVersionIsReported(t *testing.T) {
+	old := Version
+	Version = "v1.2.3"
+	defer func() { Version = old }()
+
+	cfg := &config.Config{ImmichURL: "http://immich.local", APIKeys: []string{"k"}, FriendlyName: "X", UUID: "u"}
+	srv := NewServer(cfg, []UserClient{{Client: immich.New(cfg.ImmichURL, "k")}}, nil)
+	rec := httptest.NewRecorder()
+	srv.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/description.xml", nil))
+
+	if body := rec.Body.String(); !strings.Contains(body, "<modelNumber>v1.2.3</modelNumber>") {
+		t.Errorf("modelNumber missing version: %s", body)
+	}
+	if got := rec.Header().Get("Server"); got != "Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/v1.2.3" {
+		t.Errorf("Server header = %q", got)
+	}
+}

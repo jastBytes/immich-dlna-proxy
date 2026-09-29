@@ -23,7 +23,7 @@ const deviceDescriptionTmpl = `<?xml version="1.0" encoding="UTF-8"?>
     <friendlyName>%s</friendlyName>
     <manufacturer>immich-dlna-proxy</manufacturer>
     <modelName>Immich DLNA Proxy</modelName>
-    <modelNumber>1.0</modelNumber>
+    <modelNumber>%s</modelNumber>
     <UDN>uuid:%s</UDN>
     <dlna:X_DLNADOC>DMS-1.50</dlna:X_DLNADOC>
     <iconList>
@@ -184,7 +184,7 @@ const connectionManagerSCPD = `<?xml version="1.0" encoding="UTF-8"?>
 
 func (s *Server) handleDescription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", `text/xml; charset="utf-8"`)
-	_, _ = fmt.Fprintf(w, deviceDescriptionTmpl, htmlEscapeName(s.cfg.FriendlyName), s.cfg.UUID)
+	_, _ = fmt.Fprintf(w, deviceDescriptionTmpl, htmlEscapeName(s.cfg.FriendlyName), htmlEscapeName(Version), s.cfg.UUID)
 }
 
 func (s *Server) handleContentDirectorySCPD(w http.ResponseWriter, r *http.Request) {
