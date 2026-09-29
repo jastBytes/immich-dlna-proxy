@@ -104,7 +104,37 @@ type StatusError struct {
 }
 
 func (e *StatusError) Error() string {
-	return fmt.Sprintf("immich %s: unexpected status %s", e.Op, e.Status)
+	msg := fmt.Sprintf("immich %s: unexpected status %s", e.Op, e.Status)
+	if e.StatusCode == http.StatusForbidden {
+		if perm := requiredPermission(e.Op); perm != "" {
+			msg += " - the API key probably lacks the " + perm + " permission"
+		}
+	}
+	return msg
+}
+
+// requiredPermission names the Immich API key permission the call op
+// (a StatusError.Op, e.g. "GetAssetThumbnail(abc)") needs, so a 403 can
+// say what to grant instead of leaving the user to guess - a scoped API
+// key missing one permission otherwise just makes some photos or folders
+// silently fail. See docs/configuration.md for the full list.
+func requiredPermission(op string) string {
+	name, _, _ := strings.Cut(op, "(")
+	switch name {
+	case "ListAlbums", "GetAlbum":
+		return "album.read"
+	case "ListPeople", "GetPerson", "GetPersonThumbnail":
+		return "person.read"
+	case "searchMetadata", "GetAsset":
+		return "asset.read"
+	case "DownloadOriginal", "OpenOriginalRange":
+		return "asset.download"
+	case "GetAssetThumbnail", "DownloadPlayback", "OpenPlaybackRange":
+		return "asset.view"
+	case "GetMyUser":
+		return "user.read"
+	}
+	return ""
 }
 
 // IsNotFound reports whether err is Immich answering 404 (or 400, which

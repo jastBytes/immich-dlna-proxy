@@ -31,7 +31,8 @@ A few things are by design, not oversights, and don't need a report:
 - **`IMMICH_API_KEY` is read from an environment variable**, not a secrets
   manager. Scope the key to the minimum permissions documented in
   `docs/configuration.md` (`album.read` / `asset.read` / `asset.download` /
-  `person.read`).
+  `asset.view` / `person.read`, plus `user.read` with multiple keys) - all
+  read-only.
 
 Reports about the above are welcome as documentation improvements, but
 won't be treated as vulnerabilities on their own — genuine vulnerabilities

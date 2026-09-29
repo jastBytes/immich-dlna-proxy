@@ -78,7 +78,7 @@ asset type is skipped.
 | Variable         | Required | Default          | Description                                   |
 |-------------------|:--------:|------------------|------------------------------------------------|
 | `IMMICH_URL`       | yes      | –                | Base URL of your Immich server, e.g. `http://192.168.1.10:2283` |
-| `IMMICH_API_KEY`   | yes*     | –                | Immich API key (needs album.read / asset.read / asset.download / person.read). *Not required if `IMMICH_API_KEYS` is set. |
+| `IMMICH_API_KEY`   | yes*     | –                | Immich API key (needs album.read / asset.read / asset.download / asset.view / person.read - see [permissions](docs/configuration.md#api-key-permissions)). *Not required if `IMMICH_API_KEYS` is set. |
 | `IMMICH_API_KEYS`  | no       | –                | Comma-separated API keys, for exposing more than one Immich user's library (e.g. one household sharing a server) - each gets its own top-level folder named after its account. See [Configuration](docs/configuration.md#multiple-immich-accounts). |
 | `LISTEN_ADDR`      | no       | `:8200`          | HTTP bind address/port                         |
 | `FRIENDLY_NAME`    | no       | `Immich Photos`  | Name shown on TVs when browsing servers        |
@@ -153,11 +153,14 @@ the server.
 
 ## Known limitations / things to verify against your Immich version
 
-- If folders/albums browse fine but clicking a photo shows nothing (the
-  proxy logs `DownloadOriginal(...): unexpected status 403`), your API key
-  is missing the `asset.download` permission - `asset.read` is enough to
-  list albums/people but not to fetch the actual file bytes. Edit the key
-  under Account Settings -> API Keys in Immich and grant it.
+- If folders/albums browse fine but photos, thumbnails or videos don't
+  load, the API key is probably missing a permission: the proxy log then
+  says which one (e.g. `... unexpected status 403 Forbidden - the API key
+  probably lacks the asset.download permission`). `asset.download` is
+  needed for original files, `asset.view` for HEIC photos (served as JPEG
+  previews), video thumbnails and transcoded video. Edit the key under
+  Account Settings -> API Keys in Immich and grant it - see
+  [API key permissions](docs/configuration.md#api-key-permissions).
 - Immich's REST API has changed across major versions. The JSON field
   names used here (`albumName`, `assetCount`, `originalFileName`,
   `originalMimeType`, `type`) match the commonly deployed v1 API as of
