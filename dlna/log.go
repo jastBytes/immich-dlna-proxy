@@ -20,22 +20,23 @@ func debugf(format string, args ...any) {
 	}
 }
 
-// isMediaPath reports whether path is one of the byte-serving endpoints a
-// TV hits once per photo/thumbnail it renders - far too many requests to
-// log individually by default.
-func isMediaPath(path string) bool {
-	return strings.HasPrefix(path, "/media/") || strings.HasPrefix(path, "/thumbnail/")
+// isHighVolumePath reports whether path is one of the byte-serving
+// endpoints a TV hits once per photo/thumbnail it renders, or the health
+// check a container runtime polls every 30 seconds - far too many
+// requests to log individually by default.
+func isHighVolumePath(path string) bool {
+	return strings.HasPrefix(path, "/media/") || strings.HasPrefix(path, "/thumbnail/") || path == "/healthz"
 }
 
 // loggingMiddleware logs incoming HTTP requests, primarily to make it
 // obvious whether a DLNA client got as far as fetching /description.xml or
 // calling ContentDirectory Browse at all - useful for diagnosing clients
 // that discover the server over SSDP but then go quiet. Those protocol
-// requests are always logged; /media/ and /thumbnail/ requests (one per
-// photo a TV renders) only with DEBUG=true.
+// requests are always logged; /media/, /thumbnail/ (one per photo a TV
+// renders) and /healthz requests only with DEBUG=true.
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isMediaPath(r.URL.Path) {
+		if isHighVolumePath(r.URL.Path) {
 			debugf("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)
 		} else {
 			log.Printf("HTTP %s %s from %s", r.Method, r.URL.Path, r.RemoteAddr)

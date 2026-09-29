@@ -41,6 +41,11 @@ re-runs CI, builds release archives, and publishes a multi-arch image to
 
 ## Architecture
 
+`main.version` (set via `-ldflags -X`, see `release.yml` and the
+Dockerfile's `VERSION` build arg; falls back to Go's VCS stamp, then
+`dev`) becomes `dlna.Version`, reported in SERVER headers and the device
+description's `modelNumber`.
+
 Data flow: `main.go` wires together `config` → `immich` client → `cache`
 → `dlna` server, then runs the HTTP server and the SSDP responder
 concurrently until SIGINT/SIGTERM, which triggers a graceful shutdown
@@ -86,14 +91,25 @@ different file in `dlna/`:
 
 | ObjectID | Immich call | Returns |
 |---|---|---|
-| `0` (root) | — | containers `albums`, `people`, `timeline` |
+| `0` (root) | — | containers `albums`, `people`, `timeline`, then the `EXTRA_FOLDERS` ones |
 | `albums` | `GET /api/albums` | one container per album |
 | `album:<id>` | `GET /api/albums/{id}` | one item per photo/video (filtered to `IMAGE`/`VIDEO`) |
 | `people` | `GET /api/people` | one container per *named* person (unnamed face clusters skipped) |
 | `person:<id>` | `GET /api/people/{id}/assets` | one item per photo/video (filtered to `IMAGE`/`VIDEO`) |
 | `timeline` | `POST /api/search/metadata` (`order: desc`) | every photo/video, newest first — or, with `TIMELINE_GROUPING=year`/`month`, one container per year (`timeline:<YYYY>`, plus `timeline:unknown`) |
 | `timeline:<YYYY>` / `timeline:<YYYY-MM>` | (same listing, grouped in memory — `timeline.go`) | that year's items, or (month mode) its month containers / that month's items |
+| `favorites` (optional) | `POST /api/search/metadata` (`isFavorite`) | favorite items |
+| `onthisday`, `random` (optional) | (timeline listing) | today's date in earlier years (`TZ`; tzdata embedded) / 100 random items, seeded per hour so paging is stable |
+| `places`, `place:<country>[:<city>]` (optional) | (timeline listing, `exifInfo.country`/`city`) | countries → cities → items; names query-escaped in IDs |
 | `asset:<id>` | `GET /api/assets/{id}` | `<res>` points at `/media/{assetID}` |
+
+The optional folders live in `extrafolders.go` (`EXTRA_FOLDERS`, default
+`favorites,onthisday`). All search requests set `withExif: true`
+(`mergePage`) — without it Immich omits `exifInfo` (size, resolution,
+place). `SystemUpdateID` (`updateid.go`) starts at 1 and is bumped when a
+freshly fetched album/people listing's fingerprint changes;
+`GetSystemUpdateID` re-lists (via the listing cache) so polls see
+changes.
 
 With multiple `IMMICH_API_KEYS`, the root instead lists one `user:<idx>`
 container per account, and every ObjectID above is prefixed
@@ -103,7 +119,8 @@ No such object` for unknown/invalid ObjectIDs or Immich 404s, `501 Action
 Failed` otherwise — `browseUserScope` returns errors, `handleBrowse`
 writes the fault.
 
-`buildAssetItem` (`contentdirectory.go`) picks each item's `<upnp:class>`
+`buildAssetItem` (`contentdirectory.go`, via `buildItem(itemSpec)` in
+`didl.go`) picks each item's `<upnp:class>`
 (`object.item.imageItem.photo` vs `object.item.videoItem.movie`) and
 `<upnp:albumArtURI>` based on `Asset.IsVideo()`: a photo uses its own
 `/media/{id}` URL as its own thumbnail, but a video's bytes can't double
@@ -111,6 +128,20 @@ as an image preview, so its albumArtURI instead points at
 `/thumbnail/{id}` — without *some* albumArtURI, media browsers (e.g. Home
 Assistant) list titles but show a placeholder icon instead of a
 thumbnail.
+
+Every `<res>` carries DLNA flags in `protocolInfo` (`dlnaFeatures`:
+`DLNA.ORG_OP=01` for byte seek, `CI`, `FLAGS`, no `PN`), mirrored as the
+`contentFeatures.dlna.org`/`transferMode.dlna.org` headers on media
+responses (`setMediaHeaders`); video items also get `duration` and
+`resolution`. `PHOTO_SOURCE` (`photosource.go`, default `auto`) decides
+per photo whether `/media/` serves the original or Immich's JPEG preview
+(`auto`: preview for anything not JPEG/PNG, e.g. HEIC); `VIDEO_SOURCE`
+(`videosource.go`, default `original`) whether videos are the original
+or Immich's `/api/assets/{id}/video/playback` (`transcoded`). Both are
+decided in Browse (item advertised as `image/jpeg` / `video/mp4`,
+`CI=1`, no size) and in `handleMedia` (`mediaVariantFor`, one `GetAsset`
+lookup), which must agree. `size` is also omitted for JPEG/PNG when
+`MAX_RESOLUTION` is set (served bytes may be smaller).
 
 `album:<id>` and `person:<id>` **containers** carry `<upnp:albumArtURI>`
 too, when a cover is available: albums reuse Immich's
@@ -168,8 +199,11 @@ once the bytes are in (photos) or as soon as a video is identified.
 **HTTP server**: `Server.NewHTTPServer` sets `ReadHeaderTimeout`/
 `IdleTimeout` but deliberately no `WriteTimeout` (would cut off video
 streams). SOAP bodies are capped at 64 KB (`readSOAPBody`). Request
-logging (`dlna/log.go`) always logs protocol requests but `/media/` and
-`/thumbnail/` only with `DEBUG=true` (`debugf`).
+logging (`dlna/log.go`) always logs protocol requests but `/media/`,
+`/thumbnail/` and `/healthz` only with `DEBUG=true` (`debugf`).
+`GET /healthz` is 200 when Immich answers `/api/server/ping`, else 503;
+the Dockerfile's `HEALTHCHECK` runs `immich-dlna-proxy healthcheck`
+(`main.go`), which requests it on `LISTEN_ADDR`'s port.
 
 **Cache** (`cache/cache.go`): each entry is two files — `<key>`
 (bytes) and `<key>.type` (MIME sidecar). "Last used" = file mtime,

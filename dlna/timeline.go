@@ -125,7 +125,7 @@ func (s *Server) browseTimeline(client cachedClient, userIdx int, childPrefix, l
 		paged := page(items, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, selfID, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, selfID, a, s.itemOptions()))
 		}
 		return wrapDIDL(b.String()), len(paged), len(items), nil
 	}

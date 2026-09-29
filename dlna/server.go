@@ -59,6 +59,10 @@ type Server struct {
 	// listings briefly caches Immich listing responses for Browse - see
 	// listingCache.
 	listings *listingCache
+
+	// updates maintains ContentDirectory's SystemUpdateID - see
+	// updateTracker.
+	updates *updateTracker
 }
 
 // flight is one in-progress cache fill for a cache key.
@@ -78,7 +82,7 @@ func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
 		concurrency = 4
 	}
 	debugLogging.Store(cfg.Debug)
-	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL)}
+	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL), updates: newUpdateTracker()}
 }
 
 func (s *Server) Mux() http.Handler {
@@ -96,8 +100,25 @@ func (s *Server) Mux() http.Handler {
 	mux.HandleFunc("/media/", s.handleMedia)
 	mux.HandleFunc("/media/person/", s.handlePersonThumbnail)
 	mux.HandleFunc("/thumbnail/", s.handleThumbnail)
+	mux.HandleFunc("/healthz", s.handleHealthz)
 
 	return loggingMiddleware(upnpHeadersMiddleware(mux))
+}
+
+// handleHealthz answers container health checks (the Dockerfile's
+// HEALTHCHECK runs `immich-dlna-proxy healthcheck`, which requests this):
+// 200 when this server is up and Immich answers its ping, 503 otherwise,
+// so Docker/Unraid show the container as unhealthy when the proxy is
+// running but can't reach Immich. All configured accounts share one
+// Immich server, so pinging it once covers them all.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	if err := s.users[0].Client.Ping(r.Context()); err != nil {
+		log.Printf("healthz: Immich unreachable: %v", err)
+		http.Error(w, "immich unreachable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, "ok\n")
 }
 
 // upnpHeadersMiddleware sets the SERVER and EXT headers UPnP/DLNA clients
@@ -113,7 +134,7 @@ func (s *Server) Mux() http.Handler {
 // embedded client stack apparently isn't.
 func upnpHeadersMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Server", "Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0")
+		w.Header().Set("Server", serverHeader())
 		w.Header()["EXT"] = []string{""}
 		next.ServeHTTP(w, r)
 	})
@@ -210,9 +231,18 @@ func (s *Server) handleMedia(w http.ResponseWriter, r *http.Request) {
 	// rotation baked into the pixels themselves to display upright.
 	s.serveMedia(w, r, assetID, mediaSource{
 		fetch: func(ctx context.Context) (io.ReadCloser, string, error) {
+			switch s.mediaVariantFor(userIdx, assetID) {
+			case variantPreview:
+				return client.GetAssetThumbnail(ctx, assetID)
+			case variantPlayback:
+				return client.DownloadPlayback(ctx, assetID)
+			}
 			return client.DownloadOriginal(ctx, assetID)
 		},
 		openRange: func(ctx context.Context, rangeHeader string) (*http.Response, error) {
+			if s.servesTranscoded() {
+				return client.OpenPlaybackRange(ctx, assetID, rangeHeader)
+			}
 			return client.OpenOriginalRange(ctx, assetID, rangeHeader)
 		},
 		transform: func(data []byte) []byte {
@@ -398,7 +428,7 @@ func (s *Server) serveMedia(w http.ResponseWriter, r *http.Request, cacheKey str
 	}
 
 	if s.cache == nil {
-		w.Header().Set("Content-Type", mimeType)
+		setMediaHeaders(w, mimeType)
 		http.ServeContent(w, r, cacheKey, time.Now(), bytes.NewReader(data))
 		return
 	}
@@ -424,7 +454,7 @@ func (s *Server) serveFromCache(w http.ResponseWriter, r *http.Request, cacheKey
 		return false
 	}
 	defer func() { _ = f.Close() }()
-	w.Header().Set("Content-Type", mimeType)
+	setMediaHeaders(w, mimeType)
 	http.ServeContent(w, r, cacheKey, modTime, f)
 	return true
 }
@@ -437,7 +467,7 @@ func serveFile(w http.ResponseWriter, r *http.Request, name, mimeType string, f 
 		http.Error(w, "cache error", http.StatusInternalServerError)
 		return
 	}
-	w.Header().Set("Content-Type", mimeType)
+	setMediaHeaders(w, mimeType)
 	http.ServeContent(w, r, name, info.ModTime(), f)
 }
 
@@ -502,6 +532,7 @@ func (s *Server) proxyRange(w http.ResponseWriter, r *http.Request, cacheKey str
 	if w.Header().Get("Accept-Ranges") == "" {
 		w.Header().Set("Accept-Ranges", "bytes")
 	}
+	setDLNAHeaders(w, resp.Header.Get("Content-Type"))
 	w.WriteHeader(resp.StatusCode)
 	if r.Method == http.MethodHead {
 		return
@@ -522,6 +553,30 @@ func upstreamError(w http.ResponseWriter, cacheKey string, err error) {
 	http.Error(w, "upstream error", http.StatusBadGateway)
 }
 
+// setMediaHeaders sets the Content-Type and DLNA headers for serving
+// media bytes of the given MIME type.
+func setMediaHeaders(w http.ResponseWriter, mimeType string) {
+	w.Header().Set("Content-Type", mimeType)
+	setDLNAHeaders(w, mimeType)
+}
+
+// setDLNAHeaders sets the DLNA transfer headers minidlna sends with media:
+// transferMode.dlna.org (Streaming for video, Interactive for images)
+// and contentFeatures.dlna.org (the same flags as the item's
+// protocolInfo, see dlnaFeatures). Samsung and LG renderers ask for the
+// latter via getcontentFeatures.dlna.org and use it to decide whether a
+// stream is seekable; sending it unconditionally is harmless to clients
+// that don't care.
+func setDLNAHeaders(w http.ResponseWriter, mimeType string) {
+	video := isVideoMimeType(mimeType)
+	mode := "Interactive"
+	if video {
+		mode = "Streaming"
+	}
+	w.Header().Set("transferMode.dlna.org", mode)
+	w.Header().Set("contentFeatures.dlna.org", dlnaFeatures(video, false))
+}
+
 // isVideoMimeType reports whether mimeType (as returned by Immich's
 // Content-Type header) identifies a video asset.
 func isVideoMimeType(mimeType string) bool {
@@ -533,7 +588,7 @@ func isVideoMimeType(mimeType string) bool {
 // works) or, with caching disabled, copying them straight to the client.
 func (s *Server) serveStream(w http.ResponseWriter, r *http.Request, cacheKey, mimeType string, body io.Reader) {
 	if s.cache == nil {
-		w.Header().Set("Content-Type", mimeType)
+		setMediaHeaders(w, mimeType)
 		if _, err := io.Copy(w, body); err != nil {
 			log.Printf("stream %s failed: %v", cacheKey, err)
 		}

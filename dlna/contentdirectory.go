@@ -85,7 +85,8 @@ func (s *Server) handleContentDirectoryControl(w http.ResponseWriter, r *http.Re
 	case env.Body.GetSortCapabilities != nil:
 		writeSoapResponse(w, cdNS, "GetSortCapabilitiesResponse", map[string]string{"SortCaps": "dc:title,dc:date"})
 	case env.Body.GetSystemUpdateID != nil:
-		writeSoapResponse(w, cdNS, "GetSystemUpdateIDResponse", map[string]string{"Id": "1"})
+		s.refreshSystemUpdateID()
+		writeSoapResponse(w, cdNS, "GetSystemUpdateIDResponse", map[string]string{"Id": s.updates.current()})
 	default:
 		http.Error(w, "unsupported action", http.StatusNotImplemented)
 	}
@@ -125,7 +126,7 @@ func (s *Server) handleBrowse(w http.ResponseWriter, r *http.Request, args *brow
 		"Result":         didl,
 		"NumberReturned": strconv.Itoa(returned),
 		"TotalMatches":   strconv.Itoa(total),
-		"UpdateID":       "1",
+		"UpdateID":       s.updates.current(),
 	})
 }
 
@@ -151,7 +152,7 @@ func (s *Server) browseMultiUser(objectID string, args *browseArgs, baseURL stri
 	case objectID == "0": // BrowseDirectChildren on root: one folder per configured account
 		fragments := make([]string, len(s.users))
 		for i, u := range s.users {
-			fragments[i] = buildContainer(userObjectID(i), "0", u.Name, 3, "")
+			fragments[i] = buildContainer(userObjectID(i), "0", u.Name, s.rootChildCount(), "")
 		}
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
@@ -213,9 +214,9 @@ func parseUserObjectID(objectID string, numUsers int) (idx int, local string, ok
 func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, local, rootTitle, rootParentID, rootSelfID string, args *browseArgs, baseURL string) (didl string, returned, total int, err error) {
 	switch {
 	case local == "0" && args.BrowseFlag == "BrowseMetadata":
-		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, 3, "")), 1, 1, nil
+		return wrapDIDL(buildContainer(rootSelfID, rootParentID, rootTitle, s.rootChildCount(), "")), 1, 1, nil
 
-	case local == "0": // BrowseDirectChildren on this account's root: fixed "Albums" / "People" / "Timeline" folders
+	case local == "0": // BrowseDirectChildren on this account's root: fixed "Albums" / "People" / "Timeline" folders, then any EXTRA_FOLDERS
 		albums, err := client.ListAlbums()
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("ListAlbums: %w", err)
@@ -234,6 +235,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 			// render the root listing, which doesn't scale.
 			buildContainer(childPrefix+"timeline", rootSelfID, "Timeline", -1, ""),
 		}
+		fragments = append(fragments, s.extraRootContainers(childPrefix, rootSelfID)...)
 		total = len(fragments)
 		fragments = page(fragments, args.StartingIndex, args.RequestedCount)
 		return wrapDIDL(strings.Join(fragments, "")), len(fragments), total, nil
@@ -293,6 +295,9 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 	case local == "timeline", strings.HasPrefix(local, "timeline:"):
 		return s.browseTimeline(client, userIdx, childPrefix, local, rootSelfID, args, baseURL)
 
+	case s.extraFolderFor(local) != "":
+		return s.browseExtraFolder(client, userIdx, childPrefix, local, rootSelfID, args, baseURL)
+
 	case strings.HasPrefix(local, "album:"):
 		albumID := strings.TrimPrefix(local, "album:")
 		if !immich.ValidID(albumID) {
@@ -318,7 +323,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.itemOptions()))
 		}
 		return wrapDIDL(b.String()), len(paged), total, nil
 
@@ -345,7 +350,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		paged := page(media, args.StartingIndex, args.RequestedCount)
 		var b strings.Builder
 		for _, a := range paged {
-			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending))
+			b.WriteString(buildAssetItem(baseURL, userIdx, childPrefix+"asset:"+a.ID, childPrefix+local, a, s.itemOptions()))
 		}
 		return wrapDIDL(b.String()), len(paged), total, nil
 
@@ -358,7 +363,7 @@ func (s *Server) browseUserScope(client cachedClient, userIdx int, childPrefix, 
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("GetAsset(%s): %w", assetID, err)
 		}
-		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.cfg.TitleDatePrefix, s.cfg.TitleDatePrefixDescending)), 1, 1, nil
+		return wrapDIDL(buildAssetItem(baseURL, userIdx, childPrefix+local, rootSelfID, *asset, s.itemOptions())), 1, 1, nil
 
 	default:
 		return "", 0, 0, errNoSuchObject
@@ -464,29 +469,85 @@ func filterSupportedAssets(assets []immich.Asset) []immich.Asset {
 	return out
 }
 
+// itemOptions are the configuration-driven choices buildAssetItem makes
+// for every item - see config.Config's fields of the same names.
+type itemOptions struct {
+	TitleDatePrefix           bool
+	TitleDatePrefixDescending bool
+	PhotoSource               string
+	VideoSource               string
+	// Downscaling is set when MAX_RESOLUTION is configured, so a served
+	// JPEG/PNG may be smaller than the original file.
+	Downscaling bool
+}
+
+func (s *Server) itemOptions() itemOptions {
+	return itemOptions{
+		TitleDatePrefix:           s.cfg.TitleDatePrefix,
+		TitleDatePrefixDescending: s.cfg.TitleDatePrefixDescending,
+		PhotoSource:               s.cfg.PhotoSource,
+		VideoSource:               s.cfg.VideoSource,
+		Downscaling:               s.cfg.MaxWidth > 0 && s.cfg.MaxHeight > 0,
+	}
+}
+
 // buildAssetItem renders the DIDL-Lite <item> for one asset, with id and
 // parentID as given (see browseUserScope's childPrefix, which the caller
 // has already applied). Videos use Immich's generated thumbnail as their
-// albumArtURI (see buildItem/GetAssetThumbnail) since a video's own bytes
-// can't double as a preview image the way a photo's can. userIdx scopes
-// both the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL
-// do, so /media/ and /thumbnail/ know which account's API key to fetch
-// with. datePrefixTitles/datePrefixDescending mirror
-// config.Config.TitleDatePrefix/TitleDatePrefixDescending - see
-// assetTitle. dc:date and the <res> size attribute are populated whenever
-// Immich provides them (capture time, EXIF file size), independent of
-// either date-prefix setting - see buildItem for why they matter.
-func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, datePrefixTitles, datePrefixDescending bool) string {
+// albumArtURI (see GetAssetThumbnail) since a video's own bytes can't
+// double as a preview image the way a photo's can. userIdx scopes both
+// the <res> and albumArtURI URLs the same way mediaURL/thumbnailURL do,
+// so /media/ and /thumbnail/ know which account's API key to fetch with.
+// opts.TitleDatePrefix/TitleDatePrefixDescending select the title format
+// (see assetTitle). dc:date and the <res> size attribute are populated
+// whenever Immich provides them (capture time, EXIF file size) - see
+// itemSpec for why they matter - except where the served bytes aren't
+// the original file's, so its size would be wrong: a photo served as
+// Immich's JPEG preview (opts.PhotoSource, see servesPreview) is
+// advertised as image/jpeg and flagged as converted; a video served as
+// Immich's playback version (opts.VideoSource) as video/mp4, flagged as
+// converted; and with MAX_RESOLUTION set, a photo may be downscaled. A
+// renderer that trusts size over Content-Length can otherwise cut an
+// image off or wait for bytes that never come. Videos additionally carry
+// duration, and resolution unless transcoded (Immich may have changed
+// it).
+func buildAssetItem(baseURL string, userIdx int, id, parentID string, a immich.Asset, opts itemOptions) string {
 	resURL := mediaURL(baseURL, userIdx, a.ID)
-	title := assetTitle(a, datePrefixTitles, datePrefixDescending)
-	dcDate := ""
+	it := itemSpec{
+		ID:       id,
+		ParentID: parentID,
+		Title:    assetTitle(a, opts.TitleDatePrefix, opts.TitleDatePrefixDescending),
+		MimeType: a.OriginalMimeType,
+		ResURL:   resURL,
+		Size:     a.ExifInfo.FileSizeInByte,
+	}
 	if capturedAt := a.CapturedAt(); !capturedAt.IsZero() {
-		dcDate = capturedAt.Format("2006-01-02")
+		it.Date = capturedAt.Format("2006-01-02")
 	}
-	if a.IsVideo() {
-		return buildItem(id, parentID, title, a.OriginalMimeType, resURL, thumbnailURL(baseURL, userIdx, a.ID), true, dcDate, a.ExifInfo.FileSizeInByte)
+	switch {
+	case a.IsVideo():
+		it.IsVideo = true
+		it.AlbumArtURL = thumbnailURL(baseURL, userIdx, a.ID)
+		it.Duration = a.DLNADuration()
+		if opts.VideoSource == VideoSourceTranscoded {
+			it.MimeType = "video/mp4"
+			it.Converted = true
+			it.Size = 0
+		} else if w, h := a.ExifInfo.ExifImageWidth, a.ExifInfo.ExifImageHeight; w > 0 && h > 0 {
+			it.Resolution = fmt.Sprintf("%dx%d", w, h)
+		}
+	case servesPreview(opts.PhotoSource, a):
+		it.AlbumArtURL = resURL
+		it.MimeType = "image/jpeg"
+		it.Converted = true
+		it.Size = 0
+	default:
+		it.AlbumArtURL = resURL
+		if opts.Downscaling && displayableImage(a.OriginalMimeType) {
+			it.Size = 0 // only JPEG/PNG are ever downscaled
+		}
 	}
-	return buildItem(id, parentID, title, a.OriginalMimeType, resURL, resURL, false, dcDate, a.ExifInfo.FileSizeInByte)
+	return buildItem(it)
 }
 
 // farFutureUnix anchors the countdown prefix assetTitle uses in descending
@@ -645,10 +706,10 @@ func writeRawUPnPResponseStatus(w http.ResponseWriter, status int, body string) 
 		"Content-Type: text/xml; charset=\"utf-8\"\r\n"+
 		"Connection: close\r\n"+
 		"Content-Length: %d\r\n"+
-		"Server: Linux UPnP/1.0 DLNADOC/1.50 immich-dlna-proxy/1.0\r\n"+
+		"Server: %s\r\n"+
 		"Date: %s\r\n"+
 		"EXT:\r\n\r\n%s",
-		status, http.StatusText(status), len(body), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
+		status, http.StatusText(status), len(body), serverHeader(), time.Now().UTC().Format(http.TimeFormat), body); err != nil {
 		return
 	}
 	_ = buf.Flush()

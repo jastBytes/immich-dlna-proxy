@@ -1,6 +1,9 @@
 package immich
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Album is the shape returned by GET /api/albums and GET /api/albums/{id}.
 // Neither includes the album's assets (see GetAlbumAssets) - Immich
@@ -39,7 +42,67 @@ type Asset struct {
 	// convention.
 	ExifInfo struct {
 		FileSizeInByte int64 `json:"fileSizeInByte"`
+		// ExifImageWidth/Height are the pixel dimensions Immich read from
+		// the file - used as a video item's DIDL-Lite resolution attribute
+		// (see buildAssetItem). Zero when unknown.
+		ExifImageWidth  int `json:"exifImageWidth"`
+		ExifImageHeight int `json:"exifImageHeight"`
+		// Country and City are Immich's reverse-geocoded place for a
+		// geotagged asset, used by the optional "Places" folder. Empty
+		// (or null in the JSON) when unknown.
+		Country string `json:"country"`
+		City    string `json:"city"`
 	} `json:"exifInfo"`
+	// Duration is a video's length as Immich reports it, "H:MM:SS.ffffff"
+	// (e.g. "0:01:05.250000"); photos report "0:00:00.00000". See
+	// DLNADuration.
+	Duration string `json:"duration"`
+}
+
+// DLNADuration returns the video's length in the H+:MM:SS[.F+] form the
+// DIDL-Lite res@duration attribute uses (Immich's own format already is
+// that), or "" for photos, a zero length, or anything unparseable -
+// matching this repo's pass-through convention, a missing duration just
+// means the attribute is omitted.
+func (a Asset) DLNADuration() string {
+	if !a.IsVideo() {
+		return ""
+	}
+	h, rest, ok := strings.Cut(a.Duration, ":")
+	if !ok {
+		return ""
+	}
+	m, sec, ok := strings.Cut(rest, ":")
+	if !ok || len(m) != 2 {
+		return ""
+	}
+	whole, frac, _ := strings.Cut(sec, ".")
+	if len(whole) != 2 || !allDigits(h) || !allDigits(m) || !allDigits(whole) || (frac != "" && !allDigits(frac)) {
+		return ""
+	}
+	if strings.Trim(h+m+whole+frac, "0") == "" {
+		return ""
+	}
+	if len(frac) > 3 {
+		frac = frac[:3]
+	}
+	out := h + ":" + m + ":" + whole
+	if frac != "" {
+		out += "." + frac
+	}
+	return out
+}
+
+func allDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // IsPhoto reports whether the asset is a photo.

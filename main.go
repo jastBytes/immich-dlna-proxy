@@ -5,11 +5,17 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"syscall"
 	"time"
+	// Embedded time zone database: the image is FROM scratch, with no
+	// /usr/share/zoneinfo, so without it TZ would be ignored and "today"
+	// for the "On this day" folder would always be UTC's.
+	_ "time/tzdata"
 
 	"github.com/jastBytes/immich-dlna-proxy/cache"
 	"github.com/jastBytes/immich-dlna-proxy/config"
@@ -17,7 +23,32 @@ import (
 	"github.com/jastBytes/immich-dlna-proxy/immich"
 )
 
+// version is set at build time via -ldflags "-X main.version=v1.2.3" (see
+// release.yml and the Dockerfile's VERSION build arg). Empty means it
+// wasn't, and buildVersion falls back to what the Go toolchain recorded.
+var version string
+
+// buildVersion returns the version to report: the ldflags-injected one if
+// set, else the module version the Go toolchain stamped from VCS (e.g. for
+// `go install ...@v0.2.0`), else "dev".
+func buildVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		os.Exit(healthcheck())
+	}
+
+	dlna.Version = buildVersion()
+	log.Printf("immich-dlna-proxy %s", dlna.Version)
+
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("config error: %v", err)
@@ -90,6 +121,38 @@ func main() {
 	if err := httpServer.Shutdown(shutdownCtx); err != nil {
 		log.Printf("HTTP shutdown: %v", err)
 	}
+}
+
+// healthcheck implements `immich-dlna-proxy healthcheck`, the Dockerfile's
+// HEALTHCHECK command: the image is built FROM scratch, so there's no
+// curl/wget to probe with - the binary checks itself instead. It requests
+// the running instance's /healthz (on LISTEN_ADDR, the same env var the
+// server reads) and returns the process exit code: 0 healthy, 1 not.
+func healthcheck() int {
+	addr := os.Getenv("LISTEN_ADDR")
+	if addr == "" {
+		addr = ":8200"
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: invalid LISTEN_ADDR %q: %v\n", addr, err)
+		return 1
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Get("http://" + net.JoinHostPort(host, port) + "/healthz")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "healthcheck: %v\n", err)
+		return 1
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "healthcheck: %s\n", resp.Status)
+		return 1
+	}
+	return 0
 }
 
 func ifaceOrAll(iface string) string {

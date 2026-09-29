@@ -103,7 +103,7 @@ changes with `IMMICH_API_KEYS`):
 
 | ObjectID | Represents | `BrowseDirectChildren` returns |
 |---|---|---|
-| `0` | Root | Three containers: `albums`, `people`, and `timeline` |
+| `0` | Root | Three containers: `albums`, `people`, and `timeline`, followed by any optional folders `EXTRA_FOLDERS` enables (see [Optional folders](#optional-folders-extra_folders)) |
 | `albums` | "Albums" folder | One `container` per album (`GET /api/albums`) |
 | `album:<id>` | One album | One `item` per **photo/video** asset in that album (`GET /api/albums/{id}`, filtered to `type == "IMAGE"` or `"VIDEO"`) |
 | `people` | "People" folder | One `container` per **named** person (`GET /api/people`, filtered to entries with a non-empty `name` - unconfirmed/unnamed face clusters are skipped) |
@@ -111,6 +111,12 @@ changes with `IMMICH_API_KEYS`):
 | `timeline` | "Timeline" folder | One `item` per photo/video across the whole library, most recently taken first (`POST /api/search/metadata` with `order: "desc"` and no album/person filter, filtered to `type == "IMAGE"` or `"VIDEO"`) - or, with `TIMELINE_GROUPING=year`/`month`, one `container` per year (newest first, plus `timeline:unknown` for assets without a capture date) |
 | `timeline:<YYYY>` | One year (grouping only) | With `year`: that year's items. With `month`: one `container` per month (`timeline:<YYYY-MM>`) |
 | `timeline:<YYYY-MM>` | One month (`month` grouping only) | That month's items |
+| `favorites` | "Favorites" folder (optional) | One `item` per favorite photo/video, newest first (`POST /api/search/metadata` with `isFavorite: true`) |
+| `onthisday` | "On this day" folder (optional) | One `item` per photo/video captured on today's month and day in an earlier year, newest first (from the timeline listing) |
+| `places` | "Places" folder (optional) | One `container` per country (`place:<country>`), from the timeline listing's reverse-geocoded `exifInfo.country` |
+| `place:<country>` | One country | One `container` per city (`place:<country>:<city>`; assets with no city go in an "Other" city `place:<country>:`) |
+| `place:<country>:<city>` | One city | That city's items |
+| `random` | "Random" folder (optional) | Up to 100 randomly picked photos/videos from the timeline listing, reshuffled hourly |
 | `asset:<id>` | One photo/video | N/A (items have no children); `BrowseMetadata` returns the item itself |
 
 Neither "People" nor "Timeline" report a `childCount` at the root (both
@@ -262,7 +268,17 @@ omits both otherwise rather than rendering a placeholder. Without them, a
 DLNA client that shows a per-item info readout (Samsung's Smart TV
 browser again) has nothing to read and falls back to displaying "0
 bytes" and the Unix epoch ("Jan 1 1970") instead of leaving the fields
-blank.
+blank. Search results only include `exifInfo` when asked for it, so
+every `POST /api/search/metadata` request sets `withExif: true`
+(`mergePage` in `immich/client.go`). `size` is also omitted whenever the
+served bytes aren't the original file - a photo served as Immich's
+preview (`PHOTO_SOURCE`), a video served as Immich's playback version
+(`VIDEO_SOURCE=transcoded`), or a JPEG/PNG with `MAX_RESOLUTION` set,
+which may be downscaled - since a renderer that trusts `size` over
+`Content-Length` could otherwise cut the image off or wait for bytes
+that never come. (Photos whose EXIF orientation gets baked in are
+re-encoded too, so their served size can still differ slightly; that's
+unknowable before downloading them.)
 
 A handful of other details matter for Samsung TVs specifically (found by
 diffing wire traffic against a real minidlna instance on the same TV,
@@ -291,7 +307,11 @@ thumbnail (they don't fall back to `<res>` for previews). `buildAssetItem`
 albumArtURI target based on `Asset.IsVideo()`:
 
 - **Photos** use their own `/media/<assetID>` URL as the albumArtURI too
-  - the photo is its own thumbnail.
+  - the photo is its own thumbnail. Which bytes that URL serves depends
+  on `PHOTO_SOURCE` (see [Photo formats](#photo-formats-photo_source)):
+  a photo served as Immich's JPEG preview is advertised as `image/jpeg`
+  with `DLNA.ORG_CI=1` and no `size`, since those describe the original
+  file, not what the TV will receive.
 - **Videos** use `http://<host>/thumbnail/<assetID>` instead, since a
   video file can't be decoded as a preview image the way a photo can.
   That endpoint (`dlna/server.go`'s `handleThumbnail`) serves Immich's
@@ -300,6 +320,24 @@ albumArtURI target based on `Asset.IsVideo()`:
   [Media streaming](#media-streaming)), cached under `thumb:<assetID>` -
   a TV scrolling through a video-heavy album requests these as rapidly
   as photo thumbnails.
+
+Every `<res>` element's `protocolInfo` carries the DLNA fourth field
+minidlna sends (`dlnaFeatures` in `dlna/didl.go`):
+`DLNA.ORG_OP=01;DLNA.ORG_CI=<0|1>;DLNA.ORG_FLAGS=<flags>`. `OP=01`
+advertises byte-range seeking - every media URL supports `Range` -
+which several Samsung and LG renderers require before they show a seek
+bar or allow seeking at all; `FLAGS` marks images as interactive and
+video as streaming transfers. No `DLNA.ORG_PN` profile is given: the
+right JPEG profile depends on pixel dimensions (`JPEG_LRG` tops out at
+4096x4096, smaller than many phone photos), and a wrong profile is worse
+than none. The same field is sent as the `contentFeatures.dlna.org`
+header on `/media/` and `/thumbnail/` responses, together with
+`transferMode.dlna.org` (`Streaming` for video, `Interactive` for
+images). Video items also carry `duration` (from Immich's `duration`,
+e.g. `0:01:05.250`) and `resolution` (from `exifImageWidth`/`Height`)
+so TVs can show a video's length and seek bar before playback starts.
+Photos get no `resolution`: orientation fixing and `MAX_RESOLUTION` can
+change their served dimensions.
 
 Album and person `<container>` elements carry the same
 `<upnp:albumArtURI>` tag when a cover image is available, so folder
@@ -479,6 +517,119 @@ video playback never blocks thumbnails. A request that can't get a slot within 3
 indefinitely or piling onto Immich once a slot frees up long after the TV
 has moved on.
 
+## Photo formats (`PHOTO_SOURCE`)
+
+DLNA only requires renderers to support JPEG, and in practice PNG is the
+only other photo format TVs reliably display. iPhones shoot HEIC by
+default, and Immich libraries also hold WebP, TIFF, RAW-derived and
+other formats that most TVs show as a broken thumbnail. Immich already
+generates a JPEG preview of every photo (`GET
+/api/assets/{id}/thumbnail?size=preview`, by default 1440px on the
+long edge), so `PHOTO_SOURCE` (`servesPreview` in `dlna/photosource.go`)
+picks which bytes `/media/` serves for a photo:
+
+- `auto` (default): JPEG/PNG originals as-is, everything else as the
+  preview. An asset with no MIME type in Immich's metadata keeps the
+  original.
+- `original`: always the original file (the behavior before this option existed).
+- `preview`: always the preview - smaller and faster on slow TVs or
+  networks, at reduced resolution.
+
+Videos are never affected. The decision is made twice with the same
+inputs: in Browse, so the item is advertised as `image/jpeg` (a TV
+decides from `protocolInfo` whether it can display an item at all), and
+in `handleMedia` on a cache miss, which looks the asset up
+(`Client.GetAsset`, through the listing cache the Browse that listed it
+has usually just filled) and fetches the preview instead of the
+original; if that lookup fails, it falls back to the original. The
+result is cached under the asset ID like any other `/media/` response,
+so changing `PHOTO_SOURCE` only affects photos not yet cached - clear
+`CACHE_DIR` after changing it. Immich's preview format must be left at
+its default, JPEG (Immich → Administration → Settings → Image Settings);
+a WebP preview would defeat the point.
+
+## Video formats (`VIDEO_SOURCE`)
+
+The proxy never transcodes video itself, but Immich does: under its own
+transcoding policy (Administration → Settings → Video Transcoding;
+H.264/AAC in MP4 by default) it keeps a transcoded copy of videos whose
+codec or container isn't in its accepted lists, and serves it at `GET
+/api/assets/{id}/video/playback` (falling back to the original where it
+didn't transcode). With `VIDEO_SOURCE=transcoded`, `/media/` serves that
+endpoint for videos - both the full download that fills the cache
+(`Client.DownloadPlayback`) and the proxied, `Range`-forwarding request
+that starts playback (`Client.OpenPlaybackRange`) - so a TV that can't
+play e.g. HEVC or MKV gets Immich's H.264 MP4 instead. Browse advertises
+such items as `video/mp4` with `DLNA.ORG_CI=1`, without `size` or
+`resolution` (Immich's target resolution, 720p by default, usually
+differs from the original's); `duration` is kept. The default,
+`original`, serves the original file as before. To make every video
+playable, set Immich's transcode policy to what your TV needs (e.g.
+"All videos" for maximum compatibility, at the cost of Immich
+transcoding everything). Like `PHOTO_SOURCE`, the choice shares the
+original's cache key, so clear `CACHE_DIR` after changing it.
+
+The decision per asset (`mediaVariantFor` in `dlna/videosource.go`)
+combines both settings with one asset lookup: a video under
+`transcoded` gets the playback version, a photo `PHOTO_SOURCE` selects
+gets the preview, everything else the original.
+
+## Optional folders (`EXTRA_FOLDERS`)
+
+Besides Albums/People/Timeline, the root can list optional folders,
+chosen and ordered by `EXTRA_FOLDERS` (default `favorites,onthisday`;
+`none` for none) - see `dlna/extrafolders.go`:
+
+- **Favorites** (`favorites`): every asset marked as a favorite in
+  Immich, newest first - its own `isFavorite` metadata search.
+- **On this day** (`onthisday`): assets captured on today's month and
+  day in earlier years. "Today" is the server's local date: set `TZ`
+  (e.g. `TZ=Europe/Berlin`); the binary embeds the time zone database
+  (`time/tzdata`), since the scratch image has none, so `TZ` works in
+  Docker too.
+- **Places** (`places`): country → city → items, from Immich's
+  reverse-geocoded `exifInfo.country`/`city`. Assets without a country
+  (no GPS data, or not geocoded) don't appear. Country and city names
+  are query-escaped in the ObjectIDs (`place:<country>:<city>`), so a
+  `:` in a name can't be mistaken for the separator.
+- **Random** (`random`): up to 100 assets picked at random, seeded by
+  the current hour (and account). A fresh pick on every Browse call
+  would break paging - a TV fetches a folder in several pages and would
+  get duplicates and gaps - so the pick is stable for an hour, then
+  reshuffles.
+
+On this day, Places and Random are computed from the same timeline
+listing the Timeline folder uses (and the listing cache holds), so they
+cost no extra Immich requests beyond it - but, like the Timeline, they
+need the whole library listed once. None of the optional folders report
+a `childCount` at the root, for the same reason as the Timeline.
+
+## SystemUpdateID
+
+ContentDirectory's `SystemUpdateID` (returned by `GetSystemUpdateID` and
+as `UpdateID` in every Browse response) tells clients whether their
+cached view of the server is stale; some TVs keep showing an old album
+list until it changes. `updateTracker` (`dlna/updateid.go`) starts it at
+1 and bumps it whenever a freshly fetched album or people listing
+(i.e. not a listing-cache hit) differs from the previous one -
+fingerprinting each album's ID, name, asset count and cover and each
+person's ID, name and face thumbnail. Since Immich sends no change
+notifications and the proxy doesn't implement UPnP eventing, a
+`GetSystemUpdateID` poll re-lists every account's albums and people
+itself (through the listing cache, so at most once per
+`LISTING_CACHE_SECONDS`), letting a polling TV notice changes even when
+nobody is browsing.
+
+## Health check
+
+`GET /healthz` answers `200 ok` when the proxy is up and Immich answers
+`GET /api/server/ping` (unauthenticated, 5s timeout), `503` otherwise.
+The Docker image's `HEALTHCHECK` runs `immich-dlna-proxy healthcheck`,
+a mode of the same binary (the scratch image has no curl/wget) that
+requests `/healthz` on the port from `LISTEN_ADDR` and exits 0 or 1, so
+Docker and Unraid show the container as unhealthy when Immich can't be
+reached. `/healthz` requests are only logged with `DEBUG=true`.
+
 ## Orientation
 
 Every JPEG is checked for an EXIF orientation tag (`imageproc/orientation.go`)
@@ -554,21 +705,26 @@ cached/served. See [`imageproc/resize.go`](../imageproc/resize.go).
 
 ## What isn't implemented
 
-- **Video transcoding.** Videos are streamed as their original file/codec
-  - never transcoded, remuxed, or transrated. A TV that can't decode the
-  source codec/container natively simply won't be able to play it; there's
-  no server-side fallback.
+- **Video transcoding by the proxy itself.** The proxy never transcodes,
+  remuxes or transrates anything. With `VIDEO_SOURCE=transcoded` it
+  serves the version Immich transcoded (see
+  [Video formats](#video-formats-video_source)); otherwise, or where
+  Immich didn't transcode a video, a TV that can't decode the original
+  codec/container simply can't play it.
 - **Non-photo/video asset types.** Only `type == "IMAGE"` and
   `type == "VIDEO"` assets are ever listed or served; anything else
   Immich might report is skipped.
 - **Unnamed people.** Immich creates a Person for every detected face
   cluster, including ones you haven't confirmed/named yet. Only named
   people show up as folders - there's no "unknown faces" browsing.
-- **Image format conversion.** JPEG/PNG can be downscaled (see
-  `MAX_RESOLUTION` below) but never converted to a different format.
-- **Persistent listing cache.** Listings are only kept in memory for
-  `LISTING_CACHE_SECONDS`; there's no change-notification from Immich,
-  so `SystemUpdateID` stays constant.
+- **Image format conversion by the proxy itself.** Non-JPEG/PNG photos
+  are served as Immich's own JPEG preview (see
+  [Photo formats](#photo-formats-photo_source)), never converted
+  locally; JPEG/PNG can be downscaled (see `MAX_RESOLUTION` below).
+- **Persistent listing cache, eventing.** Listings are only kept in
+  memory for `LISTING_CACHE_SECONDS`. There's no UPnP eventing (GENA):
+  clients only learn about changes by polling `GetSystemUpdateID` (see
+  [SystemUpdateID](#systemupdateid)).
 - **Authentication/authorization at the DLNA layer.** Anyone who can
   reach the proxy's HTTP port on your LAN can browse and view all
   albums visible to the configured API key. There's no per-client access

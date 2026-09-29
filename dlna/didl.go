@@ -50,36 +50,64 @@ func buildContainer(id, parentID, title string, childCount int, albumArtURI stri
 	)
 }
 
+// itemSpec describes one DIDL-Lite <item> for buildItem.
+type itemSpec struct {
+	ID, ParentID, Title string
+	// MimeType is the MIME type of the bytes behind ResURL (defaults to
+	// image/jpeg, or video/mp4 for a video).
+	MimeType string
+	// ResURL must be an absolute http(s) URL the client can GET (and
+	// ideally range-request) to fetch the bytes.
+	ResURL string
+	// AlbumArtURL is what upnp:albumArtURI points at: without it, media
+	// browsers like Home Assistant's list titles but show a placeholder
+	// icon instead of a thumbnail (they don't fall back to <res> for
+	// previews). For a photo it's typically the same as ResURL (the photo
+	// is its own thumbnail); for a video it must point at a real image
+	// instead, since a browser fetching albumArtURI can't decode a video
+	// file as one.
+	AlbumArtURL string
+	IsVideo     bool
+	// Converted marks bytes that aren't the original file - a photo served
+	// as Immich's JPEG preview (see PHOTO_SOURCE) - which DLNA flags as
+	// DLNA.ORG_CI=1.
+	Converted bool
+	// Date ("2006-01-02") and Size (bytes) are omitted when unknown ("" /
+	// 0) rather than rendered as a bogus value - see buildAssetItem for
+	// why they matter: without them, some DLNA clients (Samsung's Smart TV
+	// browser is the known case) show a per-item info readout of "0
+	// bytes"/"Jan 1 1970" instead of leaving those fields blank.
+	Date string
+	Size int64
+	// Duration ("H:MM:SS.fff") and Resolution ("1920x1080") are video-only
+	// res attributes, omitted when unknown; TVs use them to show a
+	// video's length and a seek bar before playback starts.
+	Duration, Resolution string
+}
+
 // buildItem renders one DIDL-Lite <item> element for a photo or video
-// asset. resURL must be an absolute http(s) URL the client can GET (and
-// ideally range-request) to fetch the bytes. albumArtURL is what
-// upnp:albumArtURI points at: without it, media browsers like Home
-// Assistant's list titles but show a placeholder icon instead of a
-// thumbnail (they don't fall back to <res> for previews). For a photo,
-// albumArtURL is typically the same as resURL (the photo is its own
-// thumbnail); for a video it must point at a real image instead, since a
-// browser fetching albumArtURI can't decode a video file as one.
-// dcDate ("2006-01-02", or "" if unknown) and sizeBytes (0 if unknown)
-// are omitted entirely rather than rendered as a bogus value when
-// unavailable - see buildAssetItem in contentdirectory.go for why they
-// matter: without them, some DLNA clients (Samsung's Smart TV browser
-// is the known case) show a per-item info readout of "0 bytes"/"Jan 1
-// 1970" instead of leaving those fields blank.
-func buildItem(id, parentID, title, mimeType, resURL, albumArtURL string, isVideo bool, dcDate string, sizeBytes int64) string {
-	class, defaultMime := "object.item.imageItem.photo", "image/jpeg"
-	if isVideo {
-		class, defaultMime = "object.item.videoItem.movie", "video/mp4"
+// asset.
+func buildItem(it itemSpec) string {
+	class, mimeType := "object.item.imageItem.photo", "image/jpeg"
+	if it.IsVideo {
+		class, mimeType = "object.item.videoItem.movie", "video/mp4"
 	}
-	if mimeType == "" {
-		mimeType = defaultMime
+	if it.MimeType != "" {
+		mimeType = it.MimeType
 	}
 	dateElem := ""
-	if dcDate != "" {
-		dateElem = fmt.Sprintf(`<dc:date>%s</dc:date>`, html.EscapeString(dcDate))
+	if it.Date != "" {
+		dateElem = fmt.Sprintf(`<dc:date>%s</dc:date>`, html.EscapeString(it.Date))
 	}
-	sizeAttr := ""
-	if sizeBytes > 0 {
-		sizeAttr = fmt.Sprintf(` size="%d"`, sizeBytes)
+	var attrs strings.Builder
+	if it.Size > 0 {
+		fmt.Fprintf(&attrs, ` size="%d"`, it.Size)
+	}
+	if it.Duration != "" {
+		fmt.Fprintf(&attrs, ` duration="%s"`, xmlAttrEscape(it.Duration))
+	}
+	if it.Resolution != "" {
+		fmt.Fprintf(&attrs, ` resolution="%s"`, xmlAttrEscape(it.Resolution))
 	}
 	return fmt.Sprintf(
 		`<item id="%s" parentID="%s" restricted="1">`+
@@ -87,11 +115,39 @@ func buildItem(id, parentID, title, mimeType, resURL, albumArtURL string, isVide
 			`%s`+
 			`<upnp:class>%s</upnp:class>`+
 			`<upnp:albumArtURI>%s</upnp:albumArtURI>`+
-			`<res protocolInfo="http-get:*:%s:*"%s>%s</res>`+
+			`<res protocolInfo="http-get:*:%s:%s"%s>%s</res>`+
 			`</item>`,
-		xmlAttrEscape(id), xmlAttrEscape(parentID), html.EscapeString(title), dateElem, class,
-		html.EscapeString(albumArtURL), mimeType, sizeAttr, html.EscapeString(resURL),
+		xmlAttrEscape(it.ID), xmlAttrEscape(it.ParentID), html.EscapeString(it.Title), dateElem, class,
+		html.EscapeString(it.AlbumArtURL), mimeType, dlnaFeatures(it.IsVideo, it.Converted), attrs.String(), html.EscapeString(it.ResURL),
 	)
+}
+
+// DLNA.ORG_FLAGS values, as minidlna sends them: for images, interactive
+// + background transfer modes, connection stall allowed, DLNA 1.5; for
+// video, streaming instead of interactive transfer mode.
+const (
+	dlnaFlagsImage = "00f00000000000000000000000000000"
+	dlnaFlagsVideo = "01700000000000000000000000000000"
+)
+
+// dlnaFeatures returns the DLNA fourth field of a protocolInfo string,
+// also sent as the contentFeatures.dlna.org response header on media
+// requests. DLNA.ORG_OP=01 advertises byte-range seeking (every media URL
+// supports Range) - several Samsung and LG TVs only show a seek bar, or
+// only allow seeking at all, when it's present. DLNA.ORG_CI=1 marks
+// converted content. No DLNA.ORG_PN profile is given: which JPEG profile
+// applies depends on pixel dimensions (JPEG_LRG tops out at 4096x4096,
+// smaller than many phone photos), and a wrong profile is worse than
+// none.
+func dlnaFeatures(isVideo, converted bool) string {
+	ci, flags := "0", dlnaFlagsImage
+	if converted {
+		ci = "1"
+	}
+	if isVideo {
+		flags = dlnaFlagsVideo
+	}
+	return "DLNA.ORG_OP=01;DLNA.ORG_CI=" + ci + ";DLNA.ORG_FLAGS=" + flags
 }
 
 // wrapDIDL wraps one or more container/item fragments in the DIDL-Lite
