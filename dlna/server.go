@@ -63,6 +63,10 @@ type Server struct {
 	// updates maintains ContentDirectory's SystemUpdateID - see
 	// updateTracker.
 	updates *updateTracker
+
+	// timeline keeps each account's full timeline listing in memory - see
+	// timelineStore.
+	timeline *timelineStore
 }
 
 // flight is one in-progress cache fill for a cache key.
@@ -82,7 +86,7 @@ func NewServer(cfg *config.Config, users []UserClient, c *cache.Cache) *Server {
 		concurrency = 4
 	}
 	debugLogging.Store(cfg.Debug)
-	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL), updates: newUpdateTracker()}
+	return &Server{cfg: cfg, users: users, cache: c, fetchSem: make(chan struct{}, concurrency), flights: map[string]*flight{}, listings: newListingCache(cfg.ListingCacheTTL), updates: newUpdateTracker(), timeline: newTimelineStore(cfg.TimelineRefresh)}
 }
 
 func (s *Server) Mux() http.Handler {

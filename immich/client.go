@@ -322,16 +322,24 @@ func (c *Client) searchMetadataAssets(filter map[string]any) ([]Asset, error) {
 // mergePage returns a copy of filter with "page" set, leaving the caller's
 // map untouched (it's reused across pagination requests). It also sets
 // "withExif": search results omit exifInfo unless asked for it, and
-// Browse needs it for items' size, resolution and place (country/city).
+// Browse needs it for items' size, resolution and place (country/city);
+// and "size": searchPageSize instead of Immich's default of 250.
 func mergePage(filter map[string]any, page int) map[string]any {
-	body := make(map[string]any, len(filter)+2)
+	body := make(map[string]any, len(filter)+3)
 	for k, v := range filter {
 		body[k] = v
 	}
 	body["page"] = page
+	body["size"] = searchPageSize
 	body["withExif"] = true
 	return body
 }
+
+// searchPageSize is how many assets each search page requests - Immich's
+// maximum. A page of 1,000 takes Immich about as long to answer as one of
+// its default 250, so listing a large library takes a quarter of the
+// round trips (33,000 assets: 34 requests instead of 133).
+const searchPageSize = 1000
 
 // GetMyUser returns the account that owns this client's API key (via
 // GET /api/users/me) - used to label the top-level per-user folder when

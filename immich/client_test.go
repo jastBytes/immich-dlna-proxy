@@ -737,3 +737,21 @@ func TestForbiddenNamesMissingPermission(t *testing.T) {
 		t.Errorf("404 should not mention permissions: %v", err)
 	}
 }
+
+// Searches request Immich's maximum page size: a page of 1,000 takes about
+// as long as one of the default 250, so listing a large library needs a
+// quarter of the round trips.
+func TestSearchRequestsLargePages(t *testing.T) {
+	var body map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		_, _ = w.Write([]byte(`{"assets":{"items":[],"nextPage":null}}`))
+	}))
+	defer ts.Close()
+	if _, err := New(ts.URL, "k").ListTimelineAssets(); err != nil {
+		t.Fatal(err)
+	}
+	if body["size"] != float64(1000) || body["withExif"] != true {
+		t.Errorf("search body = %v, want size 1000 and withExif", body)
+	}
+}

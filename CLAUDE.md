@@ -156,7 +156,15 @@ avoid colliding with the asset cache. Both are omitted (no
 Browse listings go through `cachedClient` (`listcache.go`), which reuses
 Immich listing responses for `LISTING_CACHE_SECONDS` (default 30; `0` =
 always live) and shares concurrent loads; errors are never cached. Cached
-slices are shared — clone before sorting in place.
+slices are shared — clone before sorting in place. The exception is the
+full timeline listing (Timeline/Places/Random): it's too slow to fetch
+while a TV waits, so `timelineStore` (`timelinestore.go`) loads it at
+startup (`Server.WarmUp`) and always serves it from memory, refreshing in
+the background once older than `TIMELINE_REFRESH_MINUTES`. Searches page
+at 1,000 (`searchPageSize`). `Asset.Duration` is an `AssetDuration` that
+accepts both Immich 1/2's `"H:MM:SS.ffffff"` string and Immich 3's integer
+milliseconds — never let one field's format make a whole listing
+undecodable.
 
 **Media streaming** (`server.go`, `Server.serveMedia`, parameterized by a
 `mediaSource`): on cache hit, serves straight from `CACHE_DIR` via

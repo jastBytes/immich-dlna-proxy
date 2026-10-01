@@ -91,6 +91,15 @@ type Config struct {
 	// separately (CacheDir) and unaffected.
 	ListingCacheTTL time.Duration
 
+	// TimelineRefresh is how old the in-memory copy of the full timeline
+	// listing (used by the Timeline, Places and Random folders) may get
+	// before the next access refreshes it in the background. That listing
+	// is loaded at startup and always served from memory, because fetching
+	// it from Immich takes large libraries longer than TVs wait for a
+	// Browse response. Set via TIMELINE_REFRESH_MINUTES (default 15,
+	// minimum 1).
+	TimelineRefresh time.Duration
+
 	// PhotoSource selects which bytes /media/ serves for photos:
 	// "auto" (default) serves JPEG/PNG originals as-is and anything else
 	// (HEIC, WebP, TIFF, ...) as Immich's generated JPEG preview, since
@@ -182,6 +191,13 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("LISTING_CACHE_SECONDS must be a non-negative integer, got %q", listingTTL)
 	}
 	cfg.ListingCacheTTL = time.Duration(secs) * time.Second
+
+	timelineRefresh := getEnvDefault("TIMELINE_REFRESH_MINUTES", "15")
+	mins, err := strconv.Atoi(timelineRefresh)
+	if err != nil || mins < 1 {
+		return nil, fmt.Errorf("TIMELINE_REFRESH_MINUTES must be a positive integer, got %q", timelineRefresh)
+	}
+	cfg.TimelineRefresh = time.Duration(mins) * time.Minute
 
 	cfg.PhotoSource = strings.ToLower(getEnvDefault("PHOTO_SOURCE", "auto"))
 	switch cfg.PhotoSource {

@@ -333,8 +333,12 @@ right JPEG profile depends on pixel dimensions (`JPEG_LRG` tops out at
 than none. The same field is sent as the `contentFeatures.dlna.org`
 header on `/media/` and `/thumbnail/` responses, together with
 `transferMode.dlna.org` (`Streaming` for video, `Interactive` for
-images). Video items also carry `duration` (from Immich's `duration`,
-e.g. `0:01:05.250`) and `resolution` (from `exifImageWidth`/`Height`)
+images). Video items also carry `duration` (rendered as e.g.
+`0:01:05.250` from Immich's `duration` field, which Immich 1.x/2.x send
+as a `"H:MM:SS.ffffff"` string and Immich 3.x as integer milliseconds -
+`immich.AssetDuration` accepts both, and decodes anything unexpected as
+"unknown" rather than failing the whole listing) and `resolution` (from
+`exifImageWidth`/`Height`)
 so TVs can show a video's length and seek bar before playback starts.
 Photos get no `resolution`: orientation fixing and `MAX_RESOLUTION` can
 change their served dimensions.
@@ -612,11 +616,32 @@ chosen and ordered by `EXTRA_FOLDERS` (default `favorites,onthisday`;
   get duplicates and gaps - so the pick is stable for an hour, then
   reshuffles.
 
-Places and Random are computed from the same timeline listing the
-Timeline folder uses (and the listing cache holds), so they cost no
-extra Immich requests beyond it - but, like the Timeline, they need the
-whole library listed once, which on a very large library can exceed a
-TV's Browse timeout until the listing is cached. None of the optional folders report
+Places and Random are computed from the same full timeline listing the
+Timeline folder uses, so they cost no extra Immich requests beyond it.
+
+### The timeline store
+
+Listing the whole library means paging through every asset (at
+Immich's maximum of 1,000 per page - a page that size takes Immich
+about as long as its default 250). On a large library that still takes
+longer than TVs wait for a Browse response - 33,000 assets took ~40s
+against Immich's demo server - and a TV that times out shows the folder
+as empty. So the full listing doesn't go through the short-lived
+listing cache but through `timelineStore` (`dlna/timelinestore.go`):
+
+- `Server.WarmUp`, called from `main.go` at startup, starts loading each
+  account's listing in the background right away.
+- Browse always answers from the copy in memory, immediately. Once that
+  copy is older than `TIMELINE_REFRESH_MINUTES` (default 15), the next
+  access starts a background refresh and keeps serving the old copy
+  until the new one is complete; a failed refresh keeps the old copy.
+- Only before the very first load has finished does a Browse wait - for
+  up to 15s (`timelineFirstLoadWait`), after which it answers with a
+  `501 Action Failed` fault ("still loading") rather than leaving the TV
+  hanging; the load carries on, so a retry a little later succeeds.
+
+New photos therefore show up in Timeline/Places/Random after at most
+one refresh interval plus one fetch. None of the optional folders report
 a `childCount` at the root, for the same reason as the Timeline.
 
 ## SystemUpdateID
