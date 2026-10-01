@@ -1,7 +1,7 @@
 package dlna
 
 import (
-	"io"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,33 +19,76 @@ const extraFoldersTimeline = `[
 	{"id":"a2","originalFileName":"xmas20.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2020-12-24T09:00:00.000Z","exifInfo":{"country":"Germany","city":"Hamburg"}},
 	{"id":"a3","originalFileName":"summer.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2022-07-04T09:00:00.000Z","exifInfo":{"country":"France","city":null}},
 	{"id":"a4","originalFileName":"today.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2024-12-24T08:00:00.000Z","exifInfo":{"country":"Germany","city":"Berlin"}},
-	{"id":"a5","originalFileName":"nogps.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2021-01-01T08:00:00.000Z"}
+	{"id":"a5","originalFileName":"nogps.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2021-01-01T08:00:00.000Z"},
+	{"id":"a6","originalFileName":"xmas22-after-midnight.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2022-12-23T23:30:00.000Z","localDateTime":"2022-12-24T00:30:00.000Z"},
+	{"id":"a7","originalFileName":"boxing-day21.jpg","originalMimeType":"image/jpeg","type":"IMAGE","fileCreatedAt":"2021-12-24T23:30:00.000Z","localDateTime":"2021-12-25T00:30:00.000Z"}
 ]`
+
+// extraFoldersImmich fakes the parts of Immich's search API the extra
+// folders use - favorites, capture-date ranges and the oldest-asset lookup
+// are filtered like the real server does - and counts unfiltered (whole
+// library) searches.
+type extraFoldersImmich struct {
+	fullListings atomic.Int32
+}
+
+func (f *extraFoldersImmich) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	switch r.URL.Path {
+	case "/api/albums":
+		_, _ = w.Write([]byte(`[]`))
+	case "/api/people":
+		_, _ = w.Write([]byte(`{"people":[]}`))
+	case "/api/search/metadata":
+		var req map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		var all []map[string]any
+		_ = json.Unmarshal([]byte(extraFoldersTimeline), &all)
+		var items []map[string]any
+		switch {
+		case req["isFavorite"] == true:
+			items = []map[string]any{{"id": "a3", "originalFileName": "summer.jpg", "originalMimeType": "image/jpeg", "type": "IMAGE"}}
+		case req["order"] == "asc" && req["size"] == float64(1):
+			oldest := all[0]
+			for _, a := range all {
+				if a["fileCreatedAt"].(string) < oldest["fileCreatedAt"].(string) {
+					oldest = a
+				}
+			}
+			items = []map[string]any{oldest}
+		case req["takenAfter"] != nil:
+			after, _ := time.Parse(time.RFC3339, req["takenAfter"].(string))
+			before, _ := time.Parse(time.RFC3339, req["takenBefore"].(string))
+			for _, a := range all {
+				t, _ := time.Parse(time.RFC3339, a["fileCreatedAt"].(string))
+				if !t.Before(after) && t.Before(before) {
+					items = append(items, a)
+				}
+			}
+		default:
+			f.fullListings.Add(1)
+			items = all
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"assets": map[string]any{"nextPage": nil, "items": items}})
+	default:
+		http.NotFound(w, r)
+	}
+}
 
 func newExtraFoldersServer(t *testing.T, folders ...string) string {
 	t.Helper()
-	fakeImmich := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/albums":
-			_, _ = w.Write([]byte(`[]`))
-		case "/api/people":
-			_, _ = w.Write([]byte(`{"people":[]}`))
-		case "/api/search/metadata":
-			body, _ := io.ReadAll(r.Body)
-			items := extraFoldersTimeline
-			if strings.Contains(string(body), `"isFavorite":true`) {
-				items = `[{"id":"a3","originalFileName":"summer.jpg","originalMimeType":"image/jpeg","type":"IMAGE"}]`
-			}
-			_, _ = w.Write([]byte(`{"assets":{"nextPage":null,"items":` + items + `}}`))
-		default:
-			http.NotFound(w, r)
-		}
-	}))
+	url, _ := newExtraFoldersServerWithFake(t, folders...)
+	return url
+}
+
+func newExtraFoldersServerWithFake(t *testing.T, folders ...string) (string, *extraFoldersImmich) {
+	t.Helper()
+	fake := &extraFoldersImmich{}
+	fakeImmich := httptest.NewServer(fake)
 	t.Cleanup(fakeImmich.Close)
 	cfg := &config.Config{ImmichURL: fakeImmich.URL, APIKeys: []string{"k"}, FriendlyName: "Test", ExtraFolders: folders}
 	ts := httptest.NewServer(NewServer(cfg, []UserClient{{Client: immich.New(fakeImmich.URL, "k")}}, nil).Mux())
 	t.Cleanup(ts.Close)
-	return ts.URL
+	return ts.URL, fake
 }
 
 func TestRootListsConfiguredExtraFolders(t *testing.T) {
@@ -80,14 +123,39 @@ func TestOnThisDayFolder(t *testing.T) {
 	timeNow = func() time.Time { return time.Date(2024, 12, 24, 12, 0, 0, 0, time.UTC) }
 	defer func() { timeNow = old }()
 
-	ts := newExtraFoldersServer(t, folderOnThisDay)
+	ts, fake := newExtraFoldersServerWithFake(t, folderOnThisDay)
 	didl := didlResult(t, browse(t, ts, "onthisday", "BrowseDirectChildren"))
-	assertOrder(t, didl, `id="asset:a1" parentID="onthisday"`, `id="asset:a2"`)
+	// Newest year first; a6 was taken at 00:30 local time on 24 December
+	// 2022 - 23 December in UTC - and counts for its local date, like in
+	// Immich's own memories.
+	assertOrder(t, didl, `id="asset:a1" parentID="onthisday"`, `id="asset:a6"`, `id="asset:a2"`)
 	if strings.Contains(didl, "asset:a4") {
 		t.Errorf("today's own photo belongs to the timeline, not On this day: %s", didl)
 	}
 	if strings.Contains(didl, "asset:a3") {
 		t.Errorf("photo from another day listed: %s", didl)
+	}
+	if strings.Contains(didl, "asset:a7") {
+		t.Errorf("photo taken on 25 December local time (24 December UTC) listed: %s", didl)
+	}
+	// Fetching the whole library takes large libraries longer than TVs
+	// wait for a Browse answer - the folder must use date searches.
+	if n := fake.fullListings.Load(); n != 0 {
+		t.Errorf("On this day fetched the whole library %d times", n)
+	}
+}
+
+// On 29 February, years without one are skipped rather than searched for
+// 1 March.
+func TestOnThisDayLeapDay(t *testing.T) {
+	old := timeNow
+	timeNow = func() time.Time { return time.Date(2024, 2, 29, 12, 0, 0, 0, time.UTC) }
+	defer func() { timeNow = old }()
+
+	ts := newExtraFoldersServer(t, folderOnThisDay)
+	didl := didlResult(t, browse(t, ts, "onthisday", "BrowseDirectChildren"))
+	if strings.Contains(didl, "<item") {
+		t.Errorf("no photo was taken on a 29 February, got: %s", didl)
 	}
 }
 

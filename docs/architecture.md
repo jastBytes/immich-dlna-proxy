@@ -112,7 +112,7 @@ changes with `IMMICH_API_KEYS`):
 | `timeline:<YYYY>` | One year (grouping only) | With `year`: that year's items. With `month`: one `container` per month (`timeline:<YYYY-MM>`) |
 | `timeline:<YYYY-MM>` | One month (`month` grouping only) | That month's items |
 | `favorites` | "Favorites" folder (optional) | One `item` per favorite photo/video, newest first (`POST /api/search/metadata` with `isFavorite: true`) |
-| `onthisday` | "On this day" folder (optional) | One `item` per photo/video captured on today's month and day in an earlier year, newest first (from the timeline listing) |
+| `onthisday` | "On this day" folder (optional) | One `item` per photo/video captured on today's month and day (local capture date) in an earlier year, newest first (one `POST /api/search/metadata` with `takenAfter`/`takenBefore` per year) |
 | `places` | "Places" folder (optional) | One `container` per country (`place:<country>`), from the timeline listing's reverse-geocoded `exifInfo.country` |
 | `place:<country>` | One country | One `container` per city (`place:<country>:<city>`; assets with no city go in an "Other" city `place:<country>:`) |
 | `place:<country>:<city>` | One city | That city's items |
@@ -583,8 +583,22 @@ chosen and ordered by `EXTRA_FOLDERS` (default `favorites,onthisday`;
 - **Favorites** (`favorites`): every asset marked as a favorite in
   Immich, newest first - its own `isFavorite` metadata search.
 - **On this day** (`onthisday`): assets captured on today's month and
-  day in earlier years. "Today" is the server's local date: set `TZ`
-  (e.g. `TZ=Europe/Berlin`); the binary embeds the time zone database
+  day in earlier years, newest first - the same selection as Immich's
+  own "On this day" memories, without needing the `memory.read`
+  permission or Immich's memory-generation job. It does *not* filter the
+  full timeline listing: paging through a large library (33,000 assets
+  took over two minutes against Immich's demo server) takes longer than
+  many TVs wait for a Browse response, and a TV that times out just
+  shows the folder empty. Instead `onThisDaySearch` looks up the
+  library's oldest asset (one single-result search) and then runs one
+  `takenAfter`/`takenBefore` search per earlier year, four at a time -
+  the same demo library answers in under two seconds. Each search spans
+  the date in every time zone (UTC-12 to UTC+14) and keeps the assets
+  whose *local* capture date (`localDateTime`, the camera's wall clock)
+  is that day, so a photo taken at 00:30 on 1 October in Berlin counts
+  for 1 October, as in Immich. The result is cached per day through the
+  listing cache. "Today" is the server's local date: set `TZ` (e.g.
+  `TZ=Europe/Berlin`); the binary embeds the time zone database
   (`time/tzdata`), since the scratch image has none, so `TZ` works in
   Docker too.
 - **Places** (`places`): country → city → items, from Immich's
@@ -598,10 +612,11 @@ chosen and ordered by `EXTRA_FOLDERS` (default `favorites,onthisday`;
   get duplicates and gaps - so the pick is stable for an hour, then
   reshuffles.
 
-On this day, Places and Random are computed from the same timeline
-listing the Timeline folder uses (and the listing cache holds), so they
-cost no extra Immich requests beyond it - but, like the Timeline, they
-need the whole library listed once. None of the optional folders report
+Places and Random are computed from the same timeline listing the
+Timeline folder uses (and the listing cache holds), so they cost no
+extra Immich requests beyond it - but, like the Timeline, they need the
+whole library listed once, which on a very large library can exceed a
+TV's Browse timeout until the listing is cached. None of the optional folders report
 a `childCount` at the root, for the same reason as the Timeline.
 
 ## SystemUpdateID

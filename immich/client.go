@@ -252,6 +252,37 @@ func (c *Client) ListTimelineAssets() ([]Asset, error) {
 	return c.searchMetadataAssets(map[string]any{"order": "desc"})
 }
 
+// ListAssetsTakenBetween returns every asset whose capture time
+// (fileCreatedAt) falls in [after, before), most recently taken first.
+// Unlike ListTimelineAssets this lets Immich do the date filtering, so it
+// stays fast however large the library is.
+func (c *Client) ListAssetsTakenBetween(after, before time.Time) ([]Asset, error) {
+	return c.searchMetadataAssets(map[string]any{
+		"takenAfter":  after.UTC().Format(time.RFC3339),
+		"takenBefore": before.UTC().Format(time.RFC3339),
+		"order":       "desc",
+	})
+}
+
+// OldestAssetTime returns the capture time of the library's oldest asset,
+// or the zero time for an empty library - one cheap request (a single
+// result, oldest first) that bounds how far back a per-year search needs
+// to go.
+func (c *Client) OldestAssetTime() (time.Time, error) {
+	var out struct {
+		Assets struct {
+			Items []Asset `json:"items"`
+		} `json:"assets"`
+	}
+	if err := c.doJSON(http.MethodPost, "/api/search/metadata", map[string]any{"order": "asc", "size": 1, "page": 1}, &out, "searchMetadata(oldest)"); err != nil {
+		return time.Time{}, err
+	}
+	if len(out.Assets.Items) == 0 {
+		return time.Time{}, nil
+	}
+	return out.Assets.Items[0].CapturedAt(), nil
+}
+
 // ListFavoriteAssets returns every asset marked as a favorite, most
 // recently taken first.
 func (c *Client) ListFavoriteAssets() ([]Asset, error) {

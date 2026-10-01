@@ -30,6 +30,10 @@ type Asset struct {
 	// FileCreatedAt is Immich's authoritative capture timestamp (RFC3339,
 	// usually derived from EXIF) - see CapturedAt.
 	FileCreatedAt string `json:"fileCreatedAt"`
+	// LocalDateTime is the capture time as the camera's wall clock showed
+	// it, in the photo's own time zone - Immich serializes it with a "Z"
+	// suffix, but its fields are local, not UTC. See LocalCaptureDate.
+	LocalDateTime string `json:"localDateTime"`
 	// ExifInfo carries Immich's parsed EXIF metadata; only FileSizeInByte
 	// is used here, for the DIDL-Lite <res> element's size attribute (see
 	// buildAssetItem in dlna/contentdirectory.go) - without it, DLNA
@@ -121,6 +125,22 @@ func (a Asset) CapturedAt() time.Time {
 		return time.Time{}
 	}
 	return t
+}
+
+// LocalCaptureDate returns the calendar date the asset was captured on in
+// its own time zone - the date Immich's own "On this day" memories go by:
+// a photo taken at 00:30 on 1 October in Berlin was taken on 1 October,
+// even though its UTC instant (FileCreatedAt) is 30 September 22:30. It
+// uses LocalDateTime, falling back to FileCreatedAt's UTC date when that
+// is missing; ok is false if neither parses.
+func (a Asset) LocalCaptureDate() (year int, month time.Month, day int, ok bool) {
+	for _, s := range []string{a.LocalDateTime, a.FileCreatedAt} {
+		if t, err := time.Parse(time.RFC3339, s); err == nil {
+			year, month, day = t.UTC().Date()
+			return year, month, day, true
+		}
+	}
+	return 0, 0, 0, false
 }
 
 // IsVideo reports whether the asset is a video.

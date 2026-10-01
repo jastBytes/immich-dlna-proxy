@@ -99,7 +99,8 @@ different file in `dlna/`:
 | `timeline` | `POST /api/search/metadata` (`order: desc`) | every photo/video, newest first — or, with `TIMELINE_GROUPING=year`/`month`, one container per year (`timeline:<YYYY>`, plus `timeline:unknown`) |
 | `timeline:<YYYY>` / `timeline:<YYYY-MM>` | (same listing, grouped in memory — `timeline.go`) | that year's items, or (month mode) its month containers / that month's items |
 | `favorites` (optional) | `POST /api/search/metadata` (`isFavorite`) | favorite items |
-| `onthisday`, `random` (optional) | (timeline listing) | today's date in earlier years (`TZ`; tzdata embedded) / 100 random items, seeded per hour so paging is stable |
+| `onthisday` (optional) | `POST /api/search/metadata` per earlier year (`takenAfter`/`takenBefore`), after one oldest-asset lookup | today's date (`TZ`; tzdata embedded) in earlier years, matched on the *local* capture date (`localDateTime`), like Immich's memories — never the full timeline listing, which on large libraries outlasts TV Browse timeouts |
+| `random` (optional) | (timeline listing) | 100 random items, seeded per hour so paging is stable |
 | `places`, `place:<country>[:<city>]` (optional) | (timeline listing, `exifInfo.country`/`city`) | countries → cities → items; names query-escaped in IDs |
 | `asset:<id>` | `GET /api/assets/{id}` | `<res>` points at `/media/{assetID}` |
 
