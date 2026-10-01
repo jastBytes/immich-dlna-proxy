@@ -94,10 +94,12 @@ func (e *listingEntry) isDone() bool {
 // cachedClient is the subset of immich.Client that Browse uses, fronted
 // by the listing cache. prefix keeps different accounts' entries apart.
 type cachedClient struct {
-	client  *immich.Client
-	cache   *listingCache
-	prefix  string
-	updates *updateTracker
+	client   *immich.Client
+	cache    *listingCache
+	prefix   string
+	idx      int
+	updates  *updateTracker
+	timeline *timelineStore
 }
 
 func (s *Server) cachedClient(userIdx int) cachedClient {
@@ -105,7 +107,7 @@ func (s *Server) cachedClient(userIdx int) cachedClient {
 	if idx < 0 {
 		idx = 0
 	}
-	return cachedClient{client: s.users[idx].Client, cache: s.listings, prefix: strconv.Itoa(idx) + "|", updates: s.updates}
+	return cachedClient{client: s.users[idx].Client, cache: s.listings, prefix: strconv.Itoa(idx) + "|", idx: idx, updates: s.updates, timeline: s.timeline}
 }
 
 // ListAlbums also feeds the SystemUpdateID tracker whenever the listing is
@@ -151,8 +153,11 @@ func (c cachedClient) GetPersonAssets(id string) ([]immich.Asset, error) {
 	return cachedListing(c.cache, c.prefix+"person-assets:"+id, func() ([]immich.Asset, error) { return c.client.GetPersonAssets(id) })
 }
 
+// ListTimelineAssets is served from the timeline store, not the listing
+// cache: the full listing is too slow to fetch while a TV waits - see
+// timelineStore.
 func (c cachedClient) ListTimelineAssets() ([]immich.Asset, error) {
-	return cachedListing(c.cache, c.prefix+"timeline", c.client.ListTimelineAssets)
+	return c.timeline.get(c.idx, c.client)
 }
 
 func (c cachedClient) GetAsset(id string) (*immich.Asset, error) {

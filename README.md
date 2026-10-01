@@ -93,7 +93,8 @@ asset type is skipped.
 | `TZ`               | no       | `UTC`            | Time zone for the "On this day" folder, e.g. `Europe/Berlin` |
 | `MAX_RESOLUTION`   | no       | (unset = disabled) | Downscale photos larger than this to fit, e.g. `1920x1080`. Aspect ratio is preserved; smaller images are left untouched. |
 | `MEDIA_FETCH_CONCURRENCY` | no | `4`         | Max photos/thumbnails allowed to download from Immich at once; extra requests queue for a free slot (giving up after 30s) instead of piling onto Immich |
-| `LISTING_CACHE_SECONDS` | no | `30`         | How long album/people/timeline listings are reused across `Browse` calls; `0` always asks Immich live |
+| `LISTING_CACHE_SECONDS` | no | `30`         | How long album/people listings are reused across `Browse` calls; `0` always asks Immich live |
+| `TIMELINE_REFRESH_MINUTES` | no | `15`      | The whole-library listing (Timeline, Places, Random) is loaded at startup and served from memory; it's refreshed in the background once older than this |
 | `TIMELINE_GROUPING` | no     | `none`           | `year` or `month` to split the Timeline folder into year (and month) folders |
 | `ADVERTISE_IP`     | no       | auto-detected    | IP announced to TVs via SSDP, if auto-detection picks the wrong one |
 | `DEBUG`            | no       | `false`          | Set to `true` to log every media request and other per-photo details |

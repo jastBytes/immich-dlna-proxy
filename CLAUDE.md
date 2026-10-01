@@ -99,7 +99,8 @@ different file in `dlna/`:
 | `timeline` | `POST /api/search/metadata` (`order: desc`) | every photo/video, newest first — or, with `TIMELINE_GROUPING=year`/`month`, one container per year (`timeline:<YYYY>`, plus `timeline:unknown`) |
 | `timeline:<YYYY>` / `timeline:<YYYY-MM>` | (same listing, grouped in memory — `timeline.go`) | that year's items, or (month mode) its month containers / that month's items |
 | `favorites` (optional) | `POST /api/search/metadata` (`isFavorite`) | favorite items |
-| `onthisday`, `random` (optional) | (timeline listing) | today's date in earlier years (`TZ`; tzdata embedded) / 100 random items, seeded per hour so paging is stable |
+| `onthisday` (optional) | `POST /api/search/metadata` per earlier year (`takenAfter`/`takenBefore`), after one oldest-asset lookup | today's date (`TZ`; tzdata embedded) in earlier years, matched on the *local* capture date (`localDateTime`), like Immich's memories — never the full timeline listing, which on large libraries outlasts TV Browse timeouts |
+| `random` (optional) | (timeline listing) | 100 random items, seeded per hour so paging is stable |
 | `places`, `place:<country>[:<city>]` (optional) | (timeline listing, `exifInfo.country`/`city`) | countries → cities → items; names query-escaped in IDs |
 | `asset:<id>` | `GET /api/assets/{id}` | `<res>` points at `/media/{assetID}` |
 
@@ -155,7 +156,15 @@ avoid colliding with the asset cache. Both are omitted (no
 Browse listings go through `cachedClient` (`listcache.go`), which reuses
 Immich listing responses for `LISTING_CACHE_SECONDS` (default 30; `0` =
 always live) and shares concurrent loads; errors are never cached. Cached
-slices are shared — clone before sorting in place.
+slices are shared — clone before sorting in place. The exception is the
+full timeline listing (Timeline/Places/Random): it's too slow to fetch
+while a TV waits, so `timelineStore` (`timelinestore.go`) loads it at
+startup (`Server.WarmUp`) and always serves it from memory, refreshing in
+the background once older than `TIMELINE_REFRESH_MINUTES`. Searches page
+at 1,000 (`searchPageSize`). `Asset.Duration` is an `AssetDuration` that
+accepts both Immich 1/2's `"H:MM:SS.ffffff"` string and Immich 3's integer
+milliseconds — never let one field's format make a whole listing
+undecodable.
 
 **Media streaming** (`server.go`, `Server.serveMedia`, parameterized by a
 `mediaSource`): on cache hit, serves straight from `CACHE_DIR` via

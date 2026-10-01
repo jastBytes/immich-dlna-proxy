@@ -112,7 +112,7 @@ changes with `IMMICH_API_KEYS`):
 | `timeline:<YYYY>` | One year (grouping only) | With `year`: that year's items. With `month`: one `container` per month (`timeline:<YYYY-MM>`) |
 | `timeline:<YYYY-MM>` | One month (`month` grouping only) | That month's items |
 | `favorites` | "Favorites" folder (optional) | One `item` per favorite photo/video, newest first (`POST /api/search/metadata` with `isFavorite: true`) |
-| `onthisday` | "On this day" folder (optional) | One `item` per photo/video captured on today's month and day in an earlier year, newest first (from the timeline listing) |
+| `onthisday` | "On this day" folder (optional) | One `item` per photo/video captured on today's month and day (local capture date) in an earlier year, newest first (one `POST /api/search/metadata` with `takenAfter`/`takenBefore` per year) |
 | `places` | "Places" folder (optional) | One `container` per country (`place:<country>`), from the timeline listing's reverse-geocoded `exifInfo.country` |
 | `place:<country>` | One country | One `container` per city (`place:<country>:<city>`; assets with no city go in an "Other" city `place:<country>:`) |
 | `place:<country>:<city>` | One city | That city's items |
@@ -333,8 +333,12 @@ right JPEG profile depends on pixel dimensions (`JPEG_LRG` tops out at
 than none. The same field is sent as the `contentFeatures.dlna.org`
 header on `/media/` and `/thumbnail/` responses, together with
 `transferMode.dlna.org` (`Streaming` for video, `Interactive` for
-images). Video items also carry `duration` (from Immich's `duration`,
-e.g. `0:01:05.250`) and `resolution` (from `exifImageWidth`/`Height`)
+images). Video items also carry `duration` (rendered as e.g.
+`0:01:05.250` from Immich's `duration` field, which Immich 1.x/2.x send
+as a `"H:MM:SS.ffffff"` string and Immich 3.x as integer milliseconds -
+`immich.AssetDuration` accepts both, and decodes anything unexpected as
+"unknown" rather than failing the whole listing) and `resolution` (from
+`exifImageWidth`/`Height`)
 so TVs can show a video's length and seek bar before playback starts.
 Photos get no `resolution`: orientation fixing and `MAX_RESOLUTION` can
 change their served dimensions.
@@ -583,8 +587,22 @@ chosen and ordered by `EXTRA_FOLDERS` (default `favorites,onthisday`;
 - **Favorites** (`favorites`): every asset marked as a favorite in
   Immich, newest first - its own `isFavorite` metadata search.
 - **On this day** (`onthisday`): assets captured on today's month and
-  day in earlier years. "Today" is the server's local date: set `TZ`
-  (e.g. `TZ=Europe/Berlin`); the binary embeds the time zone database
+  day in earlier years, newest first - the same selection as Immich's
+  own "On this day" memories, without needing the `memory.read`
+  permission or Immich's memory-generation job. It does *not* filter the
+  full timeline listing: paging through a large library (33,000 assets
+  took over two minutes against Immich's demo server) takes longer than
+  many TVs wait for a Browse response, and a TV that times out just
+  shows the folder empty. Instead `onThisDaySearch` looks up the
+  library's oldest asset (one single-result search) and then runs one
+  `takenAfter`/`takenBefore` search per earlier year, four at a time -
+  the same demo library answers in under two seconds. Each search spans
+  the date in every time zone (UTC-12 to UTC+14) and keeps the assets
+  whose *local* capture date (`localDateTime`, the camera's wall clock)
+  is that day, so a photo taken at 00:30 on 1 October in Berlin counts
+  for 1 October, as in Immich. The result is cached per day through the
+  listing cache. "Today" is the server's local date: set `TZ` (e.g.
+  `TZ=Europe/Berlin`); the binary embeds the time zone database
   (`time/tzdata`), since the scratch image has none, so `TZ` works in
   Docker too.
 - **Places** (`places`): country → city → items, from Immich's
@@ -598,10 +616,32 @@ chosen and ordered by `EXTRA_FOLDERS` (default `favorites,onthisday`;
   get duplicates and gaps - so the pick is stable for an hour, then
   reshuffles.
 
-On this day, Places and Random are computed from the same timeline
-listing the Timeline folder uses (and the listing cache holds), so they
-cost no extra Immich requests beyond it - but, like the Timeline, they
-need the whole library listed once. None of the optional folders report
+Places and Random are computed from the same full timeline listing the
+Timeline folder uses, so they cost no extra Immich requests beyond it.
+
+### The timeline store
+
+Listing the whole library means paging through every asset (at
+Immich's maximum of 1,000 per page - a page that size takes Immich
+about as long as its default 250). On a large library that still takes
+longer than TVs wait for a Browse response - 33,000 assets took ~40s
+against Immich's demo server - and a TV that times out shows the folder
+as empty. So the full listing doesn't go through the short-lived
+listing cache but through `timelineStore` (`dlna/timelinestore.go`):
+
+- `Server.WarmUp`, called from `main.go` at startup, starts loading each
+  account's listing in the background right away.
+- Browse always answers from the copy in memory, immediately. Once that
+  copy is older than `TIMELINE_REFRESH_MINUTES` (default 15), the next
+  access starts a background refresh and keeps serving the old copy
+  until the new one is complete; a failed refresh keeps the old copy.
+- Only before the very first load has finished does a Browse wait - for
+  up to 15s (`timelineFirstLoadWait`), after which it answers with a
+  `501 Action Failed` fault ("still loading") rather than leaving the TV
+  hanging; the load carries on, so a retry a little later succeeds.
+
+New photos therefore show up in Timeline/Places/Random after at most
+one refresh interval plus one fetch. None of the optional folders report
 a `childCount` at the root, for the same reason as the Timeline.
 
 ## SystemUpdateID

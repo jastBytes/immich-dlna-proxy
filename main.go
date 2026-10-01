@@ -83,6 +83,9 @@ func main() {
 	}
 
 	server := dlna.NewServer(cfg, users, diskCache)
+	// Start listing every account's whole library in the background now,
+	// so the Timeline folder can answer instantly by the time a TV opens it.
+	server.WarmUp()
 	httpServer := server.NewHTTPServer()
 
 	// SIGINT/SIGTERM (e.g. `docker stop`) trigger a clean shutdown: SSDP

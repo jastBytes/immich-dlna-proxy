@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jastBytes/immich-dlna-proxy/immich"
@@ -73,13 +74,20 @@ func (s *Server) browseExtraFolder(client cachedClient, userIdx int, childPrefix
 	}
 
 	var media []immich.Asset
-	if folder == folderFavorites {
+	switch folder {
+	case folderFavorites:
 		assets, err := client.ListFavoriteAssets()
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("ListFavoriteAssets: %w", err)
 		}
 		media = filterSupportedAssets(assets)
-	} else {
+	case folderOnThisDay:
+		assets, err := s.onThisDayAssets(client, timeNow())
+		if err != nil {
+			return "", 0, 0, err
+		}
+		media = filterSupportedAssets(assets)
+	default:
 		assets, err := client.ListTimelineAssets()
 		if err != nil {
 			return "", 0, 0, fmt.Errorf("ListTimelineAssets: %w", err)
@@ -92,7 +100,7 @@ func (s *Server) browseExtraFolder(client cachedClient, userIdx int, childPrefix
 	case folderFavorites:
 		return s.assetItems(media, args, baseURL, userIdx, childPrefix, selfID)
 	case folderOnThisDay:
-		return s.assetItems(onThisDay(media, timeNow()), args, baseURL, userIdx, childPrefix, selfID)
+		return s.assetItems(media, args, baseURL, userIdx, childPrefix, selfID)
 	case folderRandom:
 		return s.assetItems(randomSample(media, timeNow(), userIdx), args, baseURL, userIdx, childPrefix, selfID)
 	case folderPlaces:
@@ -113,21 +121,87 @@ func (s *Server) assetItems(items []immich.Asset, args *browseArgs, baseURL stri
 	return wrapDIDL(b.String()), len(paged), len(items), nil
 }
 
-// onThisDay returns the assets captured on now's month and day in earlier
-// years, newest first (media's own order).
-func onThisDay(media []immich.Asset, now time.Time) []immich.Asset {
-	var out []immich.Asset
-	for _, a := range media {
-		t := a.CapturedAt()
-		if t.IsZero() {
-			continue
-		}
-		t = t.In(now.Location())
-		if t.Month() == now.Month() && t.Day() == now.Day() && t.Year() < now.Year() {
-			out = append(out, a)
+// onThisDayConcurrency is how many per-year searches the "On this day"
+// folder runs against Immich at once.
+const onThisDayConcurrency = 4
+
+// onThisDayMinYear bounds how far back "On this day" searches, so a single
+// asset with a bogus capture date (year 1, say) can't turn one Browse into
+// thousands of Immich requests.
+const onThisDayMinYear = 1900
+
+// onThisDayAssets returns the assets captured on today's month and day in
+// earlier years, newest first, cached per day through the listing cache.
+//
+// It deliberately doesn't filter the full timeline listing the way Places
+// and Random do: fetching every asset in a large library takes Immich
+// longer than many TVs wait for a Browse response (a 33,000-asset library
+// takes minutes to page through), and a TV that times out just shows the
+// folder as empty. Instead it asks Immich for each earlier year's date
+// directly (onThisDaySearch) - a handful of small searches, however large
+// the library.
+func (s *Server) onThisDayAssets(client cachedClient, now time.Time) ([]immich.Asset, error) {
+	key := client.prefix + "onthisday:" + now.Format("2006-01-02")
+	return cachedListing(client.cache, key, func() ([]immich.Asset, error) {
+		return onThisDaySearch(client.client, now)
+	})
+}
+
+// onThisDaySearch runs one capture-date search per earlier year, back to
+// the library's oldest asset, onThisDayConcurrency at a time. Each search
+// covers the date in every time zone (UTC-12 to UTC+14) and keeps only
+// assets whose local capture date (Asset.LocalCaptureDate) is that day -
+// the same rule Immich's own "On this day" memories use, so a photo taken
+// shortly after midnight local time still counts for its local date.
+func onThisDaySearch(c *immich.Client, now time.Time) ([]immich.Asset, error) {
+	oldest, err := c.OldestAssetTime()
+	if err != nil {
+		return nil, fmt.Errorf("OldestAssetTime: %w", err)
+	}
+	if oldest.IsZero() {
+		return nil, nil
+	}
+	month, day := now.Month(), now.Day()
+	var years []int
+	for y := now.Year() - 1; y >= max(oldest.Year()-1, onThisDayMinYear); y-- {
+		if time.Date(y, month, day, 0, 0, 0, 0, time.UTC).Month() == month { // no 29 February in non-leap years
+			years = append(years, y)
 		}
 	}
-	return out
+
+	results := make([][]immich.Asset, len(years))
+	errs := make([]error, len(years))
+	sem := make(chan struct{}, onThisDayConcurrency)
+	var wg sync.WaitGroup
+	for i, y := range years {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			start := time.Date(y, month, day, 0, 0, 0, 0, time.UTC)
+			assets, err := c.ListAssetsTakenBetween(start.Add(-14*time.Hour), start.Add(36*time.Hour))
+			if err != nil {
+				errs[i] = fmt.Errorf("ListAssetsTakenBetween(%d-%02d-%02d): %w", y, month, day, err)
+				return
+			}
+			for _, a := range assets {
+				if ay, am, ad, ok := a.LocalCaptureDate(); ok && ay == y && am == month && ad == day {
+					results[i] = append(results[i], a)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	var out []immich.Asset
+	for i := range years {
+		if errs[i] != nil {
+			return nil, errs[i]
+		}
+		out = append(out, results[i]...)
+	}
+	return out, nil
 }
 
 // randomSample returns up to randomFolderSize assets picked at random from

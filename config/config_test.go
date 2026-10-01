@@ -14,7 +14,7 @@ func clearConfigEnv(t *testing.T) {
 		"IMMICH_URL", "IMMICH_API_KEY", "IMMICH_API_KEYS", "LISTEN_ADDR", "FRIENDLY_NAME",
 		"DEVICE_UUID", "SSDP_INTERFACE", "CACHE_DIR", "DISABLE_CACHE",
 		"CACHE_MAX_MB", "MAX_RESOLUTION", "MEDIA_FETCH_CONCURRENCY", "TITLE_DATE_PREFIX", "TITLE_DATE_PREFIX_DESC",
-		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG", "PHOTO_SOURCE", "VIDEO_SOURCE", "EXTRA_FOLDERS",
+		"LISTING_CACHE_SECONDS", "TIMELINE_GROUPING", "ADVERTISE_IP", "DEBUG", "PHOTO_SOURCE", "VIDEO_SOURCE", "EXTRA_FOLDERS", "TIMELINE_REFRESH_MINUTES",
 	} {
 		t.Setenv(k, "")
 	}
@@ -134,6 +134,9 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.TitleDatePrefixDescending {
 		t.Errorf("TitleDatePrefixDescending default = true, want false")
+	}
+	if cfg.TimelineRefresh != 15*time.Minute {
+		t.Errorf("TimelineRefresh default = %s, want 15m", cfg.TimelineRefresh)
 	}
 	if cfg.ListingCacheTTL != 30*time.Second {
 		t.Errorf("ListingCacheTTL default = %s, want 30s", cfg.ListingCacheTTL)
@@ -354,6 +357,8 @@ func TestLoadRejectsInvalidNewOptions(t *testing.T) {
 		{"ADVERTISE_IP": "::1"},
 		{"PHOTO_SOURCE": "thumbnail"},
 		{"VIDEO_SOURCE": "hevc"},
+		{"TIMELINE_REFRESH_MINUTES": "0"},
+		{"TIMELINE_REFRESH_MINUTES": "15m"},
 		{"EXTRA_FOLDERS": "favorites,memories"},
 	} {
 		if _, err := loadWith(t, env); err == nil {

@@ -252,6 +252,37 @@ func (c *Client) ListTimelineAssets() ([]Asset, error) {
 	return c.searchMetadataAssets(map[string]any{"order": "desc"})
 }
 
+// ListAssetsTakenBetween returns every asset whose capture time
+// (fileCreatedAt) falls in [after, before), most recently taken first.
+// Unlike ListTimelineAssets this lets Immich do the date filtering, so it
+// stays fast however large the library is.
+func (c *Client) ListAssetsTakenBetween(after, before time.Time) ([]Asset, error) {
+	return c.searchMetadataAssets(map[string]any{
+		"takenAfter":  after.UTC().Format(time.RFC3339),
+		"takenBefore": before.UTC().Format(time.RFC3339),
+		"order":       "desc",
+	})
+}
+
+// OldestAssetTime returns the capture time of the library's oldest asset,
+// or the zero time for an empty library - one cheap request (a single
+// result, oldest first) that bounds how far back a per-year search needs
+// to go.
+func (c *Client) OldestAssetTime() (time.Time, error) {
+	var out struct {
+		Assets struct {
+			Items []Asset `json:"items"`
+		} `json:"assets"`
+	}
+	if err := c.doJSON(http.MethodPost, "/api/search/metadata", map[string]any{"order": "asc", "size": 1, "page": 1}, &out, "searchMetadata(oldest)"); err != nil {
+		return time.Time{}, err
+	}
+	if len(out.Assets.Items) == 0 {
+		return time.Time{}, nil
+	}
+	return out.Assets.Items[0].CapturedAt(), nil
+}
+
 // ListFavoriteAssets returns every asset marked as a favorite, most
 // recently taken first.
 func (c *Client) ListFavoriteAssets() ([]Asset, error) {
@@ -291,16 +322,24 @@ func (c *Client) searchMetadataAssets(filter map[string]any) ([]Asset, error) {
 // mergePage returns a copy of filter with "page" set, leaving the caller's
 // map untouched (it's reused across pagination requests). It also sets
 // "withExif": search results omit exifInfo unless asked for it, and
-// Browse needs it for items' size, resolution and place (country/city).
+// Browse needs it for items' size, resolution and place (country/city);
+// and "size": searchPageSize instead of Immich's default of 250.
 func mergePage(filter map[string]any, page int) map[string]any {
-	body := make(map[string]any, len(filter)+2)
+	body := make(map[string]any, len(filter)+3)
 	for k, v := range filter {
 		body[k] = v
 	}
 	body["page"] = page
+	body["size"] = searchPageSize
 	body["withExif"] = true
 	return body
 }
+
+// searchPageSize is how many assets each search page requests - Immich's
+// maximum. A page of 1,000 takes Immich about as long to answer as one of
+// its default 250, so listing a large library takes a quarter of the
+// round trips (33,000 assets: 34 requests instead of 133).
+const searchPageSize = 1000
 
 // GetMyUser returns the account that owns this client's API key (via
 // GET /api/users/me) - used to label the top-level per-user folder when
