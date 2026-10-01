@@ -1,6 +1,7 @@
 package immich
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -94,20 +95,55 @@ func TestPersonHasThumbnail(t *testing.T) {
 
 func TestDLNADuration(t *testing.T) {
 	cases := []struct {
-		typ, in, want string
+		typ, durationJSON, want string
 	}{
-		{"VIDEO", "0:01:05.250000", "0:01:05.250"},
-		{"VIDEO", "1:02:03.5", "1:02:03.5"},
-		{"VIDEO", "12:00:00", "12:00:00"},
-		{"VIDEO", "0:00:00.00000", ""}, // zero length
-		{"VIDEO", "", ""},
-		{"VIDEO", "garbage", ""},
-		{"VIDEO", "0:1:05.2", ""},
-		{"IMAGE", "0:00:05.000000", ""}, // photos never get a duration
+		// Immich 3.x: integer milliseconds, null for photos.
+		{"VIDEO", `65250`, "0:01:05.250"},
+		{"VIDEO", `3723500`, "1:02:03.500"},
+		{"VIDEO", `0`, ""},
+		{"VIDEO", `null`, ""},
+		// Immich 1.x/2.x: "H:MM:SS.ffffff" strings.
+		{"VIDEO", `"0:01:05.250000"`, "0:01:05.250"},
+		{"VIDEO", `"1:02:03.5"`, "1:02:03.500"},
+		{"VIDEO", `"12:00:00"`, "12:00:00.000"},
+		{"VIDEO", `"0:00:00.00000"`, ""}, // zero length
+		{"VIDEO", `""`, ""},
+		{"VIDEO", `"garbage"`, ""},
+		{"VIDEO", `"0:1:05.2"`, ""},
+		// Anything else decodes as unknown instead of failing.
+		{"VIDEO", `{"weird":true}`, ""},
+		{"IMAGE", `"0:00:05.000000"`, ""}, // photos never get a duration
 	}
 	for _, c := range cases {
-		if got := (Asset{Type: c.typ, Duration: c.in}).DLNADuration(); got != c.want {
-			t.Errorf("%s %q: got %q, want %q", c.typ, c.in, got, c.want)
+		var a Asset
+		if err := json.Unmarshal([]byte(`{"type":"`+c.typ+`","duration":`+c.durationJSON+`}`), &a); err != nil {
+			t.Errorf("%s %s: decode failed: %v", c.typ, c.durationJSON, err)
+			continue
 		}
+		if got := a.DLNADuration(); got != c.want {
+			t.Errorf("%s %s: got %q, want %q", c.typ, c.durationJSON, got, c.want)
+		}
+	}
+}
+
+// Regression test: Immich 3 sends duration as a number. While Asset
+// decoded it into a string, every search page containing a video failed
+// to decode, so the Timeline, On this day and any album with a video in it
+// came out empty.
+func TestSearchPageInImmich3FormatDecodes(t *testing.T) {
+	page := `{"assets":{"nextPage":null,"items":[
+		{"id":"v1","type":"VIDEO","originalMimeType":"video/mp4","fileCreatedAt":"2024-05-01T10:00:00.000Z","localDateTime":"2024-05-01T12:00:00.000Z","duration":13204,"exifInfo":{"exifImageWidth":3840,"exifImageHeight":2160,"fileSizeInByte":123,"country":null,"city":null}},
+		{"id":"p1","type":"IMAGE","originalMimeType":"image/jpeg","fileCreatedAt":"2024-05-01T10:00:00.000Z","duration":null,"exifInfo":null}
+	]}}`
+	var out struct {
+		Assets struct {
+			Items []Asset `json:"items"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal([]byte(page), &out); err != nil {
+		t.Fatalf("Immich 3 search page failed to decode: %v", err)
+	}
+	if len(out.Assets.Items) != 2 || out.Assets.Items[0].DLNADuration() != "0:00:13.204" {
+		t.Errorf("decoded %+v", out.Assets.Items)
 	}
 }

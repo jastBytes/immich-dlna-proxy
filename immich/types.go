@@ -1,6 +1,9 @@
 package immich
 
 import (
+	"encoding/json"
+	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -57,44 +60,75 @@ type Asset struct {
 		Country string `json:"country"`
 		City    string `json:"city"`
 	} `json:"exifInfo"`
-	// Duration is a video's length as Immich reports it, "H:MM:SS.ffffff"
-	// (e.g. "0:01:05.250000"); photos report "0:00:00.00000". See
-	// DLNADuration.
-	Duration string `json:"duration"`
+	// Duration is a video's length - see AssetDuration for the formats
+	// Immich has used.
+	Duration AssetDuration `json:"duration"`
 }
 
-// DLNADuration returns the video's length in the H+:MM:SS[.F+] form the
-// DIDL-Lite res@duration attribute uses (Immich's own format already is
-// that), or "" for photos, a zero length, or anything unparseable -
-// matching this repo's pass-through convention, a missing duration just
-// means the attribute is omitted.
-func (a Asset) DLNADuration() string {
-	if !a.IsVideo() {
-		return ""
+// AssetDuration is a video's length, decoded from whichever format the
+// Immich server uses: Immich 1.x/2.x send a "H:MM:SS.ffffff" string
+// (e.g. "0:01:05.250000"), Immich 3.x an integer number of milliseconds
+// (e.g. 65250), and photos "0:00:00.00000" or null. Anything else decodes
+// to zero ("unknown") instead of failing: one unexpected value here must
+// never make the whole listing it's part of undecodable - that's how
+// every listing containing a video broke on Immich 3 when this field was
+// a plain string.
+type AssetDuration time.Duration
+
+func (d *AssetDuration) UnmarshalJSON(b []byte) error {
+	*d = 0
+	var ms float64
+	if err := json.Unmarshal(b, &ms); err == nil {
+		if ms > 0 {
+			*d = AssetDuration(time.Duration(ms * float64(time.Millisecond)))
+		}
+		return nil
 	}
-	h, rest, ok := strings.Cut(a.Duration, ":")
+	var str string
+	if err := json.Unmarshal(b, &str); err == nil {
+		*d = AssetDuration(parseClockDuration(str))
+	}
+	return nil
+}
+
+// parseClockDuration parses Immich's old "H:MM:SS[.fff...]" duration
+// format, returning 0 for anything malformed.
+func parseClockDuration(s string) time.Duration {
+	h, rest, ok := strings.Cut(s, ":")
 	if !ok {
-		return ""
+		return 0
 	}
 	m, sec, ok := strings.Cut(rest, ":")
 	if !ok || len(m) != 2 {
-		return ""
+		return 0
 	}
 	whole, frac, _ := strings.Cut(sec, ".")
 	if len(whole) != 2 || !allDigits(h) || !allDigits(m) || !allDigits(whole) || (frac != "" && !allDigits(frac)) {
-		return ""
+		return 0
 	}
-	if strings.Trim(h+m+whole+frac, "0") == "" {
-		return ""
-	}
-	if len(frac) > 3 {
-		frac = frac[:3]
-	}
-	out := h + ":" + m + ":" + whole
+	hours, _ := strconv.Atoi(h)
+	mins, _ := strconv.Atoi(m)
+	secs, _ := strconv.Atoi(whole)
+	d := time.Duration(hours)*time.Hour + time.Duration(mins)*time.Minute + time.Duration(secs)*time.Second
 	if frac != "" {
-		out += "." + frac
+		frac = (frac + "000000000")[:9] // to nanoseconds
+		ns, _ := strconv.Atoi(frac)
+		d += time.Duration(ns)
 	}
-	return out
+	return d
+}
+
+// DLNADuration returns the video's length in the H+:MM:SS.fff form the
+// DIDL-Lite res@duration attribute uses, or "" for photos and unknown or
+// zero lengths - matching this repo's pass-through convention, a missing
+// duration just means the attribute is omitted.
+func (a Asset) DLNADuration() string {
+	d := time.Duration(a.Duration)
+	if !a.IsVideo() || d <= 0 {
+		return ""
+	}
+	ms := d.Milliseconds()
+	return fmt.Sprintf("%d:%02d:%02d.%03d", ms/3600000, ms/60000%60, ms/1000%60, ms%1000)
 }
 
 func allDigits(s string) bool {
