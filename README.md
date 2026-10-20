@@ -11,7 +11,7 @@ clients can browse and display them without any extra app.
 
 Written in Go, no external dependencies — just the standard library.
 
-📖 Detailed docs: [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [Contributing](CONTRIBUTING.md)
+📖 Detailed docs: [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [Proxmox](docs/proxmox.md) · [Contributing](CONTRIBUTING.md)
 
 ## How it works
 
@@ -152,6 +152,10 @@ the "Host" network type in the container settings): SSDP relies on UDP
 multicast, which generally does not traverse Docker's default bridge
 network cleanly. Without host networking, TVs likely won't auto-discover
 the server.
+
+Running on Proxmox VE? See [Running on Proxmox](docs/proxmox.md) for an
+LXC container setup with the release binary and systemd (no Docker
+needed).
 
 ## Known limitations / things to verify against your Immich version
 
