@@ -142,8 +142,11 @@ docker run -d \
   ghcr.io/jastbytes/immich-dlna-proxy:latest
 ```
 
-See the main [README](../README.md#run-in-docker) for the full pull vs.
-local-build instructions and image tagging scheme.
+The image is published for amd64 and arm64, tagged `latest` and with
+each release's version (e.g. `1.2.3`). See the
+[README quickstart](../README.md#quickstart) for a complete `docker run`
+example and [Building from source](../README.md#building-from-source)
+to build the image yourself.
 
 ## Running on Proxmox VE
 
