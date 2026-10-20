@@ -113,10 +113,11 @@ Or copy `.env.example` to `.env`, fill in your values, and run `make run`
 
 ## Run in Docker (e.g. on your Unraid server, alongside Immich)
 
-### Option A: pull the published image (after you've pushed a release tag)
+### Option A: pull the published image
 
-Once you push a `v*.*.*` tag, the release workflow builds and publishes a
-multi-arch (amd64 + arm64) image to GitHub Container Registry:
+Every release is published as a multi-arch (amd64 + arm64) image to
+GitHub Container Registry, tagged `latest` and with its version (e.g.
+`1.2.3`) if you'd rather pin one:
 
 ```bash
 docker run -d \
