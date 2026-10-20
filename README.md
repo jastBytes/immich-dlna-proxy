@@ -11,7 +11,7 @@ clients can browse and display them without any extra app.
 
 Written in Go, no external dependencies — just the standard library.
 
-📖 Detailed docs: [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [Contributing](CONTRIBUTING.md)
+📖 Detailed docs: [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [Proxmox](docs/proxmox.md) · [Contributing](CONTRIBUTING.md)
 
 ## How it works
 
@@ -113,10 +113,11 @@ Or copy `.env.example` to `.env`, fill in your values, and run `make run`
 
 ## Run in Docker (e.g. on your Unraid server, alongside Immich)
 
-### Option A: pull the published image (after you've pushed a release tag)
+### Option A: pull the published image
 
-Once you push a `v*.*.*` tag, the release workflow builds and publishes a
-multi-arch (amd64 + arm64) image to GitHub Container Registry:
+Every release is published as a multi-arch (amd64 + arm64) image to
+GitHub Container Registry, tagged `latest` and with its version (e.g.
+`1.2.3`) if you'd rather pin one:
 
 ```bash
 docker run -d \
@@ -151,6 +152,10 @@ the "Host" network type in the container settings): SSDP relies on UDP
 multicast, which generally does not traverse Docker's default bridge
 network cleanly. Without host networking, TVs likely won't auto-discover
 the server.
+
+Running on Proxmox VE? See [Running on Proxmox](docs/proxmox.md) for an
+LXC container setup with the release binary and systemd (no Docker
+needed).
 
 ## Known limitations / things to verify against your Immich version
 

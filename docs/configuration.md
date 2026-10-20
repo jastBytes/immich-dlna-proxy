@@ -145,6 +145,11 @@ docker run -d \
 See the main [README](../README.md#run-in-docker) for the full pull vs.
 local-build instructions and image tagging scheme.
 
+## Running on Proxmox VE
+
+See [Running on Proxmox](proxmox.md) for a step-by-step LXC container
+setup (release binary + systemd service, or Docker).
+
 ## Running on Unraid (via the provided template)
 
 [`unraid-template.xml`](../unraid-template.xml) is a Community
